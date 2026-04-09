@@ -10,6 +10,7 @@
     "frontendDist": "../../frontend/dist"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "label": "main",
@@ -18,7 +19,15 @@
         "height": 840,
         "minWidth": 1120,
         "minHeight": 760,
-        "resizable": true
+        "resizable": true,
+        "theme": "Dark",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true,
+        "acceptFirstMouse": true,
+        "trafficLightPosition": {
+          "x": 18,
+          "y": 18
+        }
       }
     ],
     "security": {

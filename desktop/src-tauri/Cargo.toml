@@ -5,13 +5,24 @@ edition = "2024"
 build = "build.rs"
 
 [dependencies]
+aes = "0.8"
 anyhow = "1"
+blowfish = "0.9"
+cbc = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+futures = "0.3"
+hex = "0.4"
 mysql = "28.0.0"
+mysql_async = { version = "0.34", default-features = false, features = ["default-rustls", "minimal"] }
+regex = "1"
+rfd = "0.15"
 rusqlite = { version = "0.39.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha1 = "0.10"
 tauri = { version = "2.10.3", features = ["macos-private-api"] }
+thiserror = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }

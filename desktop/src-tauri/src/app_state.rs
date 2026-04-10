@@ -1,14 +1,21 @@
+use crate::compare_service::CompareService;
+use crate::compare_task_manager::CompareTaskManager;
 use crate::local_store::LocalStore;
 use crate::mysql_service::MysqlService;
+use crate::structure_compare_service::StructureCompareService;
 use anyhow::Result;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct AppState {
     pub app_name: String,
     pub app_data_dir: PathBuf,
-    pub local_store: LocalStore,
-    pub mysql_service: MysqlService,
+    pub local_store: Arc<LocalStore>,
+    pub mysql_service: Arc<MysqlService>,
+    pub compare_service: Arc<CompareService>,
+    pub structure_compare_service: Arc<StructureCompareService>,
+    pub compare_tasks: CompareTaskManager,
 }
 
 impl AppState {
@@ -20,8 +27,11 @@ impl AppState {
         Ok(Self {
             app_name: app_name.into(),
             app_data_dir,
-            local_store,
-            mysql_service: MysqlService::default(),
+            local_store: Arc::new(local_store),
+            mysql_service: Arc::new(MysqlService::default()),
+            compare_service: Arc::new(CompareService::default()),
+            structure_compare_service: Arc::new(StructureCompareService::default()),
+            compare_tasks: CompareTaskManager::default(),
         })
     }
 }

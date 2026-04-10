@@ -2,17 +2,47 @@ import { mockApi } from './mockData'
 import type {
   AppBootstrap,
   ApplyTableDataChangesPayload,
+  ChooseFilePayload,
+  CompareDetailPageRequest,
+  CompareDetailPageResponse,
+  CompareHistoryInput,
+  CompareHistoryItem,
+  CompareTableDiscoveryRequest,
+  CompareTableDiscoveryResponse,
+  CompareTaskCancelResponse,
+  CompareTaskProgressResponse,
+  CompareTaskResultResponse,
+  CompareTaskStartResponse,
   ConnectionProfile,
   ConnectionTestResult,
+  CreateDataSourceGroupPayload,
   CreateDatabasePayload,
   CreateTablePayload,
+  DataCompareRequest,
+  DataCompareResponse,
   DatabaseEntry,
+  DataSourceGroup,
+  DeleteDataSourceGroupResult,
   ExecuteSqlPayload,
+  ExportSqlFileRequest,
+  ExportSqlFileResponse,
+  ImportConnectionProfilesResult,
+  LoadSqlAutocompletePayload,
   LoadTableDataPayload,
   MutationResult,
+  RenameDataSourceGroupPayload,
+  RenameDataSourceGroupResult,
   SaveConnectionProfilePayload,
+  SaveFileDialogResult,
+  SqlAutocompleteSchema,
   SqlConsoleResult,
   SqlPreview,
+  StructureCompareDetailRequest,
+  StructureCompareDetailResponse,
+  StructureCompareRequest,
+  StructureCompareResponse,
+  StructureExportSqlFileRequest,
+  StructureExportSqlFileResponse,
   TableColumnSummary,
   TableDataPage,
   TableDesign,
@@ -36,6 +66,46 @@ export async function getAppBootstrap(): Promise<AppBootstrap> {
     return mockApi.getAppBootstrap()
   }
   return invokeCommand<AppBootstrap>('get_app_bootstrap')
+}
+
+export async function createDataSourceGroup(
+  payload: CreateDataSourceGroupPayload,
+): Promise<DataSourceGroup> {
+  if (!isDesktopShell()) {
+    return mockApi.createDataSourceGroup(payload)
+  }
+  return invokeCommand<DataSourceGroup>('create_data_source_group', { payload })
+}
+
+export async function renameDataSourceGroup(
+  payload: RenameDataSourceGroupPayload,
+): Promise<RenameDataSourceGroupResult> {
+  if (!isDesktopShell()) {
+    return mockApi.renameDataSourceGroup(payload)
+  }
+  return invokeCommand<RenameDataSourceGroupResult>('rename_data_source_group', {
+    payload,
+  })
+}
+
+export async function deleteDataSourceGroup(
+  groupId: string,
+): Promise<DeleteDataSourceGroupResult> {
+  if (!isDesktopShell()) {
+    return mockApi.deleteDataSourceGroup(groupId)
+  }
+  return invokeCommand<DeleteDataSourceGroupResult>('delete_data_source_group', {
+    groupId,
+  })
+}
+
+export async function importNavicatConnectionProfiles(): Promise<ImportConnectionProfilesResult> {
+  if (!isDesktopShell()) {
+    return mockApi.importNavicatConnectionProfiles()
+  }
+  return invokeCommand<ImportConnectionProfilesResult>(
+    'import_navicat_connection_profiles',
+  )
 }
 
 export async function saveConnectionProfile(
@@ -99,6 +169,147 @@ export async function listDatabaseTables(
     profileId,
     databaseName,
   })
+}
+
+export async function loadSqlAutocomplete(
+  payload: LoadSqlAutocompletePayload,
+): Promise<SqlAutocompleteSchema> {
+  if (!isDesktopShell()) {
+    return mockApi.loadSqlAutocomplete(payload)
+  }
+  return invokeCommand<SqlAutocompleteSchema>('load_sql_autocomplete', { payload })
+}
+
+export async function compareDiscoverTables(
+  payload: CompareTableDiscoveryRequest,
+): Promise<CompareTableDiscoveryResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.compareDiscoverTables(payload)
+  }
+  return invokeCommand<CompareTableDiscoveryResponse>('compare_discover_tables', {
+    payload,
+  })
+}
+
+export async function runDataCompare(
+  payload: DataCompareRequest,
+): Promise<DataCompareResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.runDataCompare(payload)
+  }
+  return invokeCommand<DataCompareResponse>('compare_run', { payload })
+}
+
+export async function startDataCompareTask(
+  payload: DataCompareRequest,
+): Promise<CompareTaskStartResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.startDataCompareTask(payload)
+  }
+  return invokeCommand<CompareTaskStartResponse>('compare_start', { payload })
+}
+
+export async function getDataCompareTaskProgress(
+  compareId: string,
+): Promise<CompareTaskProgressResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.getDataCompareTaskProgress(compareId)
+  }
+  return invokeCommand<CompareTaskProgressResponse>('compare_progress', { compareId })
+}
+
+export async function getDataCompareTaskResult(
+  compareId: string,
+): Promise<CompareTaskResultResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.getDataCompareTaskResult(compareId)
+  }
+  return invokeCommand<CompareTaskResultResponse>('compare_result', { compareId })
+}
+
+export async function cancelDataCompareTask(
+  compareId: string,
+): Promise<CompareTaskCancelResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.cancelDataCompareTask(compareId)
+  }
+  return invokeCommand<CompareTaskCancelResponse>('compare_cancel', { compareId })
+}
+
+export async function chooseSqlExportPath(
+  payload?: ChooseFilePayload,
+): Promise<SaveFileDialogResult> {
+  if (!isDesktopShell()) {
+    return mockApi.chooseSqlExportPath(payload)
+  }
+  return invokeCommand<SaveFileDialogResult>('files_choose_sql_path', { payload })
+}
+
+export async function loadDataCompareDetailPage(
+  payload: CompareDetailPageRequest,
+): Promise<CompareDetailPageResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.loadDataCompareDetailPage(payload)
+  }
+  return invokeCommand<CompareDetailPageResponse>('compare_detail_page', {
+    payload,
+  })
+}
+
+export async function exportDataCompareSqlFile(
+  payload: ExportSqlFileRequest,
+): Promise<ExportSqlFileResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportDataCompareSqlFile(payload)
+  }
+  return invokeCommand<ExportSqlFileResponse>('compare_export_sql_file', { payload })
+}
+
+export async function runStructureCompare(
+  payload: StructureCompareRequest,
+): Promise<StructureCompareResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.runStructureCompare(payload)
+  }
+  return invokeCommand<StructureCompareResponse>('structure_compare_run', { payload })
+}
+
+export async function loadStructureCompareDetail(
+  payload: StructureCompareDetailRequest,
+): Promise<StructureCompareDetailResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.loadStructureCompareDetail(payload)
+  }
+  return invokeCommand<StructureCompareDetailResponse>('structure_compare_detail', {
+    payload,
+  })
+}
+
+export async function exportStructureCompareSqlFile(
+  payload: StructureExportSqlFileRequest,
+): Promise<StructureExportSqlFileResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportStructureCompareSqlFile(payload)
+  }
+  return invokeCommand<StructureExportSqlFileResponse>('structure_compare_export_sql_file', {
+    payload,
+  })
+}
+
+export async function listCompareHistory(limit?: number): Promise<CompareHistoryItem[]> {
+  if (!isDesktopShell()) {
+    return mockApi.listCompareHistory(limit)
+  }
+  return invokeCommand<CompareHistoryItem[]>('compare_history_list', { limit })
+}
+
+export async function addCompareHistory(
+  payload: CompareHistoryInput,
+): Promise<CompareHistoryItem> {
+  if (!isDesktopShell()) {
+    return mockApi.addCompareHistory(payload)
+  }
+  return invokeCommand<CompareHistoryItem>('compare_history_add', { payload })
 }
 
 export async function listTableColumns(

@@ -14,6 +14,15 @@
 - [Beekeeper Studio](https://github.com/beekeeper-studio/beekeeper-studio)
   - 参考点：结果集标签页体验和轻量查询交互
 
+## SQL 编辑
+
+- [DBeaver](https://github.com/dbeaver/dbeaver)
+  - 参考点：对象元数据驱动的 SQL Assist、手动触发补全
+- [Bytebase](https://github.com/bytebase/bytebase)
+  - 参考点：语法 + 上下文 + schema 元数据三层补全思路
+- [Beekeeper Studio](https://github.com/beekeeper-studio/beekeeper-studio)
+  - 参考点：克制的自动补全交互与 `Ctrl/Cmd+Enter` 执行
+
 ## 当前实现采用的约束
 
 - 不照搬这些项目的 UI，只借鉴交互语义和提交策略。

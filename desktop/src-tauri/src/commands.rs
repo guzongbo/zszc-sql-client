@@ -1,13 +1,28 @@
 use crate::app_state::AppState;
+use crate::compare_service::{CompareExecutionControl, CompareExecutionUpdate};
 use crate::models::{
-    AppBootstrap, ApplyTableDataChangesPayload, ConnectionProfile, ConnectionTestResult,
-    CreateDatabasePayload, CreateTablePayload, DatabaseEntry, ExecuteSqlPayload,
-    LoadTableDataPayload, MutationResult, SaveConnectionProfilePayload, SqlConsoleResult,
-    SqlPreview, TableColumnSummary, TableDataPage, TableDdl, TableDesign,
-    TableDesignMutationPayload, TableEntry, TableIdentity,
+    AppBootstrap, ApplyTableDataChangesPayload, CompareDetailPageRequest,
+    CompareDetailPageResponse, CompareHistoryInput, CompareHistoryItem,
+    CompareTableDiscoveryRequest, CompareTableDiscoveryResponse, CompareTaskCancelResponse,
+    CompareTaskProgressResponse, CompareTaskResultResponse, CompareTaskStartResponse,
+    ChooseFilePayload, ExportSqlFileRequest, ExportSqlFileResponse,
+    ConnectionProfile, ConnectionTestResult, CreateDataSourceGroupPayload, CreateDatabasePayload,
+    CreateTablePayload, DataCompareRequest, DataCompareResponse, DataSourceGroup, DatabaseEntry,
+    DeleteDataSourceGroupResult, ExecuteSqlPayload, ImportConnectionProfilesResult,
+    LoadSqlAutocompletePayload, LoadTableDataPayload, MutationResult, RenameDataSourceGroupPayload,
+    RenameDataSourceGroupResult, SaveConnectionProfilePayload, SaveFileDialogResult,
+    SqlAutocompleteSchema, SqlConsoleResult, SqlPreview, StructureCompareDetailRequest,
+    StructureCompareDetailResponse, StructureCompareRequest, StructureCompareResponse,
+    StructureExportSqlFileRequest, StructureExportSqlFileResponse, TableColumnSummary,
+    TableDataPage, TableDdl, TableDesign, TableDesignMutationPayload, TableEntry, TableIdentity,
 };
-use anyhow::Result;
+use crate::navicat::parse_navicat_connections;
+use anyhow::{Result, anyhow};
+use rfd::FileDialog;
+use std::fs;
+use std::sync::atomic::Ordering;
 use tauri::State;
+use uuid::Uuid;
 
 #[tauri::command]
 pub fn get_app_bootstrap(state: State<'_, AppState>) -> Result<AppBootstrap, String> {
@@ -15,13 +30,51 @@ pub fn get_app_bootstrap(state: State<'_, AppState>) -> Result<AppBootstrap, Str
         .local_store
         .list_connection_profiles()
         .map_err(to_error_message)?;
+    let groups = state
+        .local_store
+        .list_data_source_groups()
+        .map_err(to_error_message)?;
 
     Ok(AppBootstrap {
         app_name: state.app_name.clone(),
         storage_engine: "sqlite".to_string(),
         app_data_dir: state.app_data_dir.display().to_string(),
         connection_profiles: profiles,
+        data_source_groups: groups,
     })
+}
+
+#[tauri::command]
+pub fn create_data_source_group(
+    state: State<'_, AppState>,
+    payload: CreateDataSourceGroupPayload,
+) -> Result<DataSourceGroup, String> {
+    state
+        .local_store
+        .create_data_source_group(payload.group_name)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn rename_data_source_group(
+    state: State<'_, AppState>,
+    payload: RenameDataSourceGroupPayload,
+) -> Result<RenameDataSourceGroupResult, String> {
+    state
+        .local_store
+        .rename_data_source_group(&payload.group_id, payload.group_name)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn delete_data_source_group(
+    state: State<'_, AppState>,
+    group_id: String,
+) -> Result<DeleteDataSourceGroupResult, String> {
+    state
+        .local_store
+        .delete_data_source_group(&group_id)
+        .map_err(to_error_message)
 }
 
 #[tauri::command]
@@ -40,6 +93,39 @@ pub fn save_connection_profile(
         .map_err(to_error_message)?;
 
     Ok(profile)
+}
+
+#[tauri::command]
+pub fn import_navicat_connection_profiles(
+    state: State<'_, AppState>,
+) -> Result<ImportConnectionProfilesResult, String> {
+    let Some(file_path) = FileDialog::new()
+        .add_filter("Navicat Connections", &["ncx"])
+        .pick_file()
+    else {
+        return Ok(ImportConnectionProfilesResult {
+            canceled: true,
+            file_path: None,
+            total_count: 0,
+            created_count: 0,
+            updated_count: 0,
+            unresolved_password_count: 0,
+            skipped_count: 0,
+            imported_items: vec![],
+            skipped_items: vec![],
+        });
+    };
+
+    let xml = fs::read_to_string(&file_path).map_err(|error| error.to_string())?;
+    let parsed = parse_navicat_connections(&xml).map_err(to_error_message)?;
+    state
+        .local_store
+        .import_connection_profiles(
+            parsed.connections,
+            parsed.skipped_items,
+            Some(file_path.display().to_string()),
+        )
+        .map_err(to_error_message)
 }
 
 #[tauri::command]
@@ -117,6 +203,285 @@ pub fn list_database_tables(
     state
         .mysql_service
         .list_tables(&profile, &database_name)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn load_sql_autocomplete(
+    state: State<'_, AppState>,
+    payload: LoadSqlAutocompletePayload,
+) -> Result<SqlAutocompleteSchema, String> {
+    let profile = load_profile(&state, &payload.profile_id).map_err(to_error_message)?;
+    state
+        .mysql_service
+        .load_sql_autocomplete(&profile, &payload.database_name)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn compare_discover_tables(
+    state: State<'_, AppState>,
+    payload: CompareTableDiscoveryRequest,
+) -> Result<CompareTableDiscoveryResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile =
+        load_profile(&state, &payload.source_profile_id).map_err(to_error_message)?;
+    let target_profile =
+        load_profile(&state, &payload.target_profile_id).map_err(to_error_message)?;
+    state
+        .compare_service
+        .discover_tables(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn compare_run(
+    state: State<'_, AppState>,
+    payload: DataCompareRequest,
+) -> Result<DataCompareResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile =
+        load_profile(&state, &payload.source_profile_id).map_err(to_error_message)?;
+    let target_profile =
+        load_profile(&state, &payload.target_profile_id).map_err(to_error_message)?;
+    state
+        .compare_service
+        .compare(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn compare_start(
+    state: State<'_, AppState>,
+    payload: DataCompareRequest,
+) -> Result<CompareTaskStartResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile =
+        load_profile(&state, &payload.source_profile_id).map_err(to_error_message)?;
+    let target_profile =
+        load_profile(&state, &payload.target_profile_id).map_err(to_error_message)?;
+
+    let compare_id = Uuid::new_v4().to_string();
+    let compare_service = state.compare_service.clone();
+    let compare_tasks = state.compare_tasks.clone();
+    compare_tasks.register(compare_id.clone());
+
+    let task_compare_id = compare_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let Some(cancel_flag) = compare_tasks.cancel_flag(&task_compare_id) else {
+            return;
+        };
+
+        let progress_compare_id = task_compare_id.clone();
+        let progress_tasks = compare_tasks.clone();
+        let payload_for_task = payload.clone();
+        let source_profile_for_task = source_profile.clone();
+        let target_profile_for_task = target_profile.clone();
+
+        let report_progress = move |update: CompareExecutionUpdate| {
+            progress_tasks.report_progress(
+                &progress_compare_id,
+                update.total_tables,
+                update.completed_tables,
+                update.current_table,
+                update.current_phase,
+                update.current_phase_progress,
+            );
+        };
+        let is_cancelled = move || cancel_flag.load(Ordering::SeqCst);
+        let control = CompareExecutionControl {
+            compare_id: Some(task_compare_id.as_str()),
+            on_progress: Some(&report_progress),
+            is_cancelled: Some(&is_cancelled),
+        };
+
+        let outcome = compare_service
+            .compare_with_control(
+                &payload_for_task,
+                &source_profile_for_task,
+                &target_profile_for_task,
+                Some(&control),
+            )
+            .await;
+
+        match outcome {
+            Ok(result) => compare_tasks.finish_success(&task_compare_id, result),
+            Err(error) if error.to_string().contains("已取消") => {
+                compare_tasks.finish_canceled(&task_compare_id, error.to_string())
+            }
+            Err(error) => compare_tasks.finish_failure(&task_compare_id, error.to_string()),
+        }
+    });
+
+    Ok(CompareTaskStartResponse { compare_id })
+}
+
+#[tauri::command]
+pub fn compare_progress(
+    state: State<'_, AppState>,
+    compare_id: String,
+) -> Result<CompareTaskProgressResponse, String> {
+    state
+        .compare_tasks
+        .progress(&compare_id)
+        .ok_or_else(|| format!("未找到 compare_id={compare_id} 对应的数据对比任务"))
+}
+
+#[tauri::command]
+pub fn compare_result(
+    state: State<'_, AppState>,
+    compare_id: String,
+) -> Result<CompareTaskResultResponse, String> {
+    state
+        .compare_tasks
+        .take_result(&compare_id)
+        .ok_or_else(|| format!("未找到 compare_id={compare_id} 对应的数据对比任务"))
+}
+
+#[tauri::command]
+pub fn compare_cancel(
+    state: State<'_, AppState>,
+    compare_id: String,
+) -> Result<CompareTaskCancelResponse, String> {
+    Ok(state.compare_tasks.request_cancel(&compare_id))
+}
+
+#[tauri::command]
+pub fn files_choose_sql_path(
+    payload: Option<ChooseFilePayload>,
+) -> Result<SaveFileDialogResult, String> {
+    let mut dialog = FileDialog::new().add_filter("SQL File", &["sql"]);
+    if let Some(default_file_name) = payload
+        .and_then(|item| item.default_file_name)
+        .filter(|item| !item.trim().is_empty())
+    {
+        dialog = dialog.set_file_name(&default_file_name);
+    }
+
+    let file_path = dialog.save_file();
+    Ok(SaveFileDialogResult {
+        canceled: file_path.is_none(),
+        file_path: file_path.map(|item| item.display().to_string()),
+    })
+}
+
+#[tauri::command]
+pub async fn compare_detail_page(
+    state: State<'_, AppState>,
+    payload: CompareDetailPageRequest,
+) -> Result<CompareDetailPageResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile = load_profile(&state, &payload.compare_request.source_profile_id)
+        .map_err(to_error_message)?;
+    let target_profile = load_profile(&state, &payload.compare_request.target_profile_id)
+        .map_err(to_error_message)?;
+
+    state
+        .compare_service
+        .load_detail_page(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn compare_export_sql_file(
+    state: State<'_, AppState>,
+    payload: ExportSqlFileRequest,
+) -> Result<ExportSqlFileResponse, String> {
+    payload.compare_request.validate().map_err(to_error_message)?;
+    if payload.file_path.trim().is_empty() {
+        return Err("file_path 不能为空".to_string());
+    }
+    let source_profile = load_profile(&state, &payload.compare_request.source_profile_id)
+        .map_err(to_error_message)?;
+    let target_profile = load_profile(&state, &payload.compare_request.target_profile_id)
+        .map_err(to_error_message)?;
+
+    state
+        .compare_service
+        .export_sql_file(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn structure_compare_run(
+    state: State<'_, AppState>,
+    payload: StructureCompareRequest,
+) -> Result<StructureCompareResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile =
+        load_profile(&state, &payload.source_profile_id).map_err(to_error_message)?;
+    let target_profile =
+        load_profile(&state, &payload.target_profile_id).map_err(to_error_message)?;
+
+    state
+        .structure_compare_service
+        .compare(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn structure_compare_detail(
+    state: State<'_, AppState>,
+    payload: StructureCompareDetailRequest,
+) -> Result<StructureCompareDetailResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let source_profile = load_profile(&state, &payload.compare_request.source_profile_id)
+        .map_err(to_error_message)?;
+    let target_profile = load_profile(&state, &payload.compare_request.target_profile_id)
+        .map_err(to_error_message)?;
+
+    state
+        .structure_compare_service
+        .load_detail(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn structure_compare_export_sql_file(
+    state: State<'_, AppState>,
+    payload: StructureExportSqlFileRequest,
+) -> Result<StructureExportSqlFileResponse, String> {
+    payload.compare_request.validate().map_err(to_error_message)?;
+    if payload.file_path.trim().is_empty() {
+        return Err("file_path 不能为空".to_string());
+    }
+    let source_profile = load_profile(&state, &payload.compare_request.source_profile_id)
+        .map_err(to_error_message)?;
+    let target_profile = load_profile(&state, &payload.compare_request.target_profile_id)
+        .map_err(to_error_message)?;
+
+    state
+        .structure_compare_service
+        .export_sql_file(&payload, &source_profile, &target_profile)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn compare_history_list(
+    state: State<'_, AppState>,
+    limit: Option<usize>,
+) -> Result<Vec<CompareHistoryItem>, String> {
+    state
+        .local_store
+        .list_compare_history(limit.unwrap_or(100))
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn compare_history_add(
+    state: State<'_, AppState>,
+    payload: CompareHistoryInput,
+) -> Result<CompareHistoryItem, String> {
+    state
+        .local_store
+        .append_compare_history(payload)
         .map_err(to_error_message)
 }
 
@@ -253,7 +618,10 @@ pub fn execute_sql(
 }
 
 fn load_profile(state: &State<'_, AppState>, profile_id: &str) -> Result<ConnectionProfile> {
-    state.local_store.load_connection_profile(profile_id)
+    state
+        .local_store
+        .load_connection_profile(profile_id)
+        .map_err(|error| anyhow!(error.to_string()))
 }
 
 fn payload_to_profile(payload: SaveConnectionProfilePayload) -> ConnectionProfile {
@@ -270,6 +638,6 @@ fn payload_to_profile(payload: SaveConnectionProfilePayload) -> ConnectionProfil
     }
 }
 
-fn to_error_message(error: anyhow::Error) -> String {
+fn to_error_message(error: impl std::fmt::Display) -> String {
     error.to_string()
 }

@@ -1,16 +1,21 @@
 mod app_state;
+mod compare_core;
 mod commands;
+mod compare_service;
+mod compare_task_manager;
 mod local_store;
 mod models;
 mod mysql_service;
+mod navicat;
+mod structure_compare_service;
 
 use crate::app_state::AppState;
 use crate::local_store::LocalStore;
 use anyhow::Context;
 use std::fs;
 use std::path::PathBuf;
-use tauri::Manager;
-use tracing::info;
+use tauri::{Manager, RunEvent};
+use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
 
 fn init_tracing() -> anyhow::Result<()> {
@@ -42,7 +47,7 @@ fn main() {
         eprintln!("failed to initialize tracing: {error}");
     }
 
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let app_data_dir = ensure_app_data_dir(app.handle())?;
             let local_store = LocalStore::new(app_data_dir.join("zszc-sql-client.db"))?;
@@ -59,13 +64,32 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_bootstrap,
+            commands::create_data_source_group,
+            commands::rename_data_source_group,
+            commands::delete_data_source_group,
             commands::save_connection_profile,
+            commands::import_navicat_connection_profiles,
             commands::delete_connection_profile,
             commands::test_connection_profile,
             commands::disconnect_connection_profile,
             commands::list_profile_databases,
             commands::create_database,
             commands::list_database_tables,
+            commands::load_sql_autocomplete,
+            commands::compare_discover_tables,
+            commands::compare_run,
+            commands::compare_start,
+            commands::compare_progress,
+            commands::compare_result,
+            commands::compare_cancel,
+            commands::files_choose_sql_path,
+            commands::compare_detail_page,
+            commands::compare_export_sql_file,
+            commands::structure_compare_run,
+            commands::structure_compare_detail,
+            commands::structure_compare_export_sql_file,
+            commands::compare_history_list,
+            commands::compare_history_add,
             commands::list_table_columns,
             commands::load_table_design,
             commands::preview_table_design_sql,
@@ -78,6 +102,16 @@ fn main() {
             commands::apply_table_data_changes,
             commands::execute_sql,
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to start tauri application");
+        .build(tauri::generate_context!())
+        .expect("failed to build tauri application");
+
+    app.run(|app_handle, event| {
+        if let RunEvent::Exit = event {
+            if let Some(state) = app_handle.try_state::<AppState>() {
+                if let Err(error) = state.mysql_service.disconnect_all() {
+                    warn!(error = %error, "failed to disconnect mysql pools before exit");
+                }
+            }
+        }
+    });
 }

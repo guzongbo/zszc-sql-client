@@ -4,7 +4,7 @@
 
 - Calicat 文件：`2042046124939087872`
 - 选中画布：`6edf7e97-138a-41e3-9993-15e0fe89a110`
-- 当前落地范围：数据库导航树、表结构编辑页、表数据编辑页
+- 当前落地范围：数据库导航树、表结构编辑页、表数据编辑页、结构对比、数据对比、对比记录
 
 ## 页面拆分
 
@@ -21,13 +21,14 @@
 | 查询条件栏 | `query-bar` | `load_table_data` | 支持 `WHERE` / `ORDER BY` 文本条件 |
 | 数据表格 | `data-grid` | `load_table_data` | 仅对主键表开放可编辑提交 |
 | DDL 弹窗 | `Modal` | `get_table_ddl` | 展示当前 `CREATE TABLE` |
+| 新增数据源弹窗 | `ProfileEditorView` | `save_connection_profile` `import_navicat_connection_profiles` `create_data_source_group` `rename_data_source_group` `delete_data_source_group` | 手动新增与 Navicat `.ncx` 导入共用同一入口，并在同页提供分组下拉与分组维护 |
+| 结构对比工作区 | `StructureCompareWorkspace` | `structure_compare_run` `load_structure_compare_detail` | 同库名映射的结构差异摘要、DDL 详情与预览 SQL |
+| 数据对比工作区 | `DataCompareWorkspace` | `compare_discover_tables` `compare_start` `compare_progress` `compare_result` `compare_cancel` `load_compare_detail_page` | 同名表发现、异步执行、差异摘要、明细分页 |
+| 对比记录工作区 | `CompareHistoryWorkspace` | `list_compare_history` `append_compare_history` | 本地保存数据对比与结构对比历史，支持回看统计和表范围 |
 
-## 本轮不展开的原型入口
+## 暂不展开的原型入口
 
-- 结构对比
-- 数据对比
-- 对比记录
 - 性能监控
 - 独立 SQL 编辑器页面
 
-这些入口已在 UI 中保留，但不扩展成独立页面，避免超出当前原型细化程度。
+以上入口仍保留在工具列，但本轮只实现对比相关核心链路，不继续扩展性能监控与独立 SQL 工作区。

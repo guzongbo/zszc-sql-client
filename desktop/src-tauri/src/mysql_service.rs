@@ -1,18 +1,40 @@
 use crate::models::{
-    ApplyTableDataChangesPayload, ConnectionProfile, ConnectionTestResult, CreateTablePayload,
-    DatabaseEntry, DeletedRowPayload, ExecuteSqlPayload, InsertedRowPayload, JsonRecord,
-    LoadTableDataPayload, MutationResult, SqlConsoleResult, SqlPreview, TableColumn,
-    TableColumnSummary, TableDataColumn, TableDataPage, TableDataRow, TableDdl, TableDesign,
-    TableDesignMutationPayload, TableEntry, UpdatedRowPayload,
+    ConnectionProfile, ConnectionTestResult, CreateTablePayload, DatabaseEntry, JsonRecord,
+    MutationResult, SqlAutocompleteColumn, SqlAutocompleteSchema, SqlAutocompleteTable, SqlPreview,
+    TableColumn, TableColumnSummary, TableDataColumn, TableDataRow, TableDdl, TableDesign,
+    TableDesignMutationPayload, TableEntry,
 };
 use anyhow::{Context, Result, anyhow, ensure};
 use mysql::prelude::Queryable;
-use mysql::{Opts, OptsBuilder, Pool, PooledConn, Row, TxOpts, Value};
+use mysql::{Opts, OptsBuilder, Pool, PooledConn, Row, Value};
 use serde_json::{Number, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
+use std::time::Duration;
+
+#[path = "sql_console.rs"]
+mod sql_console;
+#[path = "table_data.rs"]
+mod table_data;
 
 const SYSTEM_DATABASES: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
+const MYSQL_STATEMENT_CACHE_SIZE: usize = 128;
+const MYSQL_IO_TIMEOUT_SECS: u64 = 30;
+const MYSQL_TCP_KEEPALIVE_TIME_MS: u32 = 60_000;
+
+#[derive(Debug)]
+struct PageWindow<T> {
+    rows: Vec<T>,
+    total_rows: u64,
+    row_count_exact: bool,
+    truncated: bool,
+}
+
+#[derive(Debug)]
+struct TableDataContext {
+    columns: Vec<TableDataColumn>,
+    primary_keys: Vec<String>,
+}
 
 #[derive(Debug, Default)]
 pub struct MysqlService {
@@ -41,6 +63,15 @@ impl MysqlService {
             .lock()
             .map_err(|_| anyhow!("连接池状态不可用"))?
             .remove(profile_id);
+
+        Ok(())
+    }
+
+    pub fn disconnect_all(&self) -> Result<()> {
+        self.pools
+            .lock()
+            .map_err(|_| anyhow!("连接池状态不可用"))?
+            .clear();
 
         Ok(())
     }
@@ -82,7 +113,10 @@ impl MysqlService {
         database_name: &str,
     ) -> Result<MutationResult> {
         let normalized_database_name = normalize_identifier_name(database_name, "数据库名")?;
-        let statement = format!("CREATE DATABASE {}", quote_identifier(&normalized_database_name));
+        let statement = format!(
+            "CREATE DATABASE {}",
+            quote_identifier(&normalized_database_name)
+        );
 
         self.with_conn(profile, |connection| {
             connection
@@ -130,6 +164,82 @@ impl MysqlService {
                     },
                 )
                 .context("读取数据表列表失败")
+        })
+    }
+
+    pub fn load_sql_autocomplete(
+        &self,
+        profile: &ConnectionProfile,
+        database_name: &str,
+    ) -> Result<SqlAutocompleteSchema> {
+        let sql = "
+            SELECT
+                TABLE_NAME,
+                COLUMN_NAME,
+                COLUMN_TYPE,
+                IS_NULLABLE,
+                COLUMN_KEY,
+                EXTRA,
+                COLUMN_COMMENT
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = ?
+            ORDER BY TABLE_NAME, ORDINAL_POSITION
+        ";
+
+        self.with_conn(profile, |connection| {
+            let rows = connection
+                .exec_map(
+                    sql,
+                    (database_name,),
+                    |(
+                        table_name,
+                        column_name,
+                        column_type,
+                        is_nullable,
+                        column_key,
+                        extra,
+                        column_comment,
+                    ): (
+                        String,
+                        String,
+                        String,
+                        String,
+                        String,
+                        String,
+                        String,
+                    )| {
+                        (
+                            table_name,
+                            SqlAutocompleteColumn {
+                                name: column_name,
+                                data_type: column_type,
+                                nullable: is_nullable.eq_ignore_ascii_case("YES"),
+                                primary_key: column_key.eq_ignore_ascii_case("PRI"),
+                                auto_increment: extra
+                                    .to_ascii_lowercase()
+                                    .contains("auto_increment"),
+                                comment: column_comment,
+                            },
+                        )
+                    },
+                )
+                .context("读取 SQL 自动补全元数据失败")?;
+
+            let mut grouped = BTreeMap::<String, Vec<SqlAutocompleteColumn>>::new();
+            for (table_name, column) in rows {
+                grouped.entry(table_name).or_default().push(column);
+            }
+
+            let tables = grouped
+                .into_iter()
+                .map(|(name, columns)| SqlAutocompleteTable { name, columns })
+                .collect();
+
+            Ok(SqlAutocompleteSchema {
+                profile_id: profile.id.clone(),
+                database_name: database_name.to_string(),
+                tables,
+            })
         })
     }
 
@@ -231,8 +341,11 @@ impl MysqlService {
         profile: &ConnectionProfile,
         payload: &CreateTablePayload,
     ) -> Result<MutationResult> {
-        let statement =
-            build_create_table_statement(&payload.database_name, &payload.table_name, &payload.columns)?;
+        let statement = build_create_table_statement(
+            &payload.database_name,
+            &payload.table_name,
+            &payload.columns,
+        )?;
 
         self.with_conn(profile, |connection| {
             connection
@@ -268,68 +381,24 @@ impl MysqlService {
         })
     }
 
-    pub fn load_table_data(
+    #[allow(dead_code)]
+    pub fn load_all_table_rows(
         &self,
         profile: &ConnectionProfile,
-        payload: &LoadTableDataPayload,
-    ) -> Result<TableDataPage> {
-        let normalized_where_clause = normalize_raw_clause(payload.where_clause.as_deref());
-        let normalized_order_by_clause =
-            normalize_raw_clause(payload.order_by_clause.as_deref());
-
-        validate_raw_clause(normalized_where_clause.as_deref())?;
-        validate_raw_clause(normalized_order_by_clause.as_deref())?;
-
-        let limit = payload.limit.unwrap_or(100).clamp(1, 500);
-        let offset = payload.offset.unwrap_or(0);
-        let table_design =
-            self.load_table_design(profile, &payload.database_name, &payload.table_name)?;
-        let primary_keys = table_design
-            .columns
-            .iter()
-            .filter(|column| column.primary_key)
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>();
-
-        let mut count_sql = format!(
-            "SELECT COUNT(*) FROM {}.{}",
-            quote_identifier(&payload.database_name),
-            quote_identifier(&payload.table_name)
-        );
-        let mut data_sql = format!(
+        database_name: &str,
+        table_name: &str,
+        key_columns: &[String],
+    ) -> Result<Vec<TableDataRow>> {
+        let sql = format!(
             "SELECT * FROM {}.{}",
-            quote_identifier(&payload.database_name),
-            quote_identifier(&payload.table_name)
+            quote_identifier(database_name),
+            quote_identifier(table_name)
         );
-
-        if let Some(where_clause) = normalized_where_clause
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            count_sql.push_str(" WHERE ");
-            count_sql.push_str(where_clause.trim());
-            data_sql.push_str(" WHERE ");
-            data_sql.push_str(where_clause.trim());
-        }
-
-        if let Some(order_by_clause) = normalized_order_by_clause
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-        {
-            data_sql.push_str(" ORDER BY ");
-            data_sql.push_str(order_by_clause.trim());
-        }
-
-        data_sql.push_str(&format!(" LIMIT {} OFFSET {}", limit, offset));
 
         self.with_conn(profile, |connection| {
-            let total_rows = connection
-                .query_first::<u64, _>(count_sql)
-                .context("读取数据总数失败")?
-                .unwrap_or(0);
-
-            let result = connection.query_iter(data_sql).context("读取表数据失败")?;
-
+            let result = connection
+                .query_iter(sql.as_str())
+                .context("读取全量表数据失败")?;
             let column_names = result
                 .columns()
                 .as_ref()
@@ -337,179 +406,31 @@ impl MysqlService {
                 .map(|column| column.name_str().to_string())
                 .collect::<Vec<_>>();
 
-            let rows = result
+            result
                 .map(|row_result| {
                     let row = row_result?;
-                    build_table_data_row(row, &column_names, &primary_keys)
+                    build_table_data_row(row, &column_names, key_columns)
                 })
-                .collect::<Result<Vec<_>, _>>()?;
-
-            let columns = table_design
-                .columns
-                .iter()
-                .map(|column| TableDataColumn {
-                    name: column.name.clone(),
-                    data_type: column.full_data_type.clone(),
-                    nullable: column.nullable,
-                    primary_key: column.primary_key,
-                    auto_increment: column.auto_increment,
-                    default_value: column.default_value.clone(),
-                    comment: column.comment.clone(),
-                })
-                .collect();
-
-            Ok(TableDataPage {
-                profile_id: profile.id.clone(),
-                database_name: payload.database_name.clone(),
-                table_name: payload.table_name.clone(),
-                columns,
-                rows,
-                primary_keys: primary_keys.clone(),
-                offset,
-                limit,
-                total_rows,
-                editable: !primary_keys.is_empty(),
-            })
+                .collect::<Result<Vec<_>>>()
         })
     }
 
-    pub fn apply_table_data_changes(
+    #[allow(dead_code)]
+    pub fn preview_table_sync_sql(
         &self,
         profile: &ConnectionProfile,
-        payload: &ApplyTableDataChangesPayload,
-    ) -> Result<MutationResult> {
-        let design =
-            self.load_table_design(profile, &payload.database_name, &payload.table_name)?;
-        let primary_keys = design
-            .columns
-            .iter()
-            .filter(|column| column.primary_key)
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>();
-
-        ensure!(
-            !primary_keys.is_empty(),
-            "当前表未定义主键，为保证数据可靠性，本轮仅支持主键表编辑"
-        );
-
-        let statements = preview_data_statements(payload, &design.columns)?;
-
-        self.with_conn(profile, |connection| {
-            let mut transaction = connection
-                .start_transaction(TxOpts::default())
-                .context("开启事务失败")?;
-
-            for deleted_row in &payload.deleted_rows {
-                let (statement, params) = build_delete_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &primary_keys,
-                    deleted_row,
-                )?;
-                transaction
-                    .exec_drop(statement, params)
-                    .context("删除数据行失败")?;
-            }
-
-            for updated_row in &payload.updated_rows {
-                let (statement, params) = build_update_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &design.columns,
-                    &primary_keys,
-                    updated_row,
-                )?;
-                if !statement.is_empty() {
-                    transaction
-                        .exec_drop(statement, params)
-                        .context("更新数据行失败")?;
-                }
-            }
-
-            for inserted_row in &payload.inserted_rows {
-                let (statement, params) = build_insert_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &design.columns,
-                    inserted_row,
-                )?;
-                transaction
-                    .exec_drop(statement, params)
-                    .context("新增数据行失败")?;
-            }
-
-            transaction.commit().context("提交事务失败")?;
-
-            Ok(MutationResult {
-                affected_rows: (payload.deleted_rows.len()
-                    + payload.updated_rows.len()
-                    + payload.inserted_rows.len()) as u64,
-                statements,
-            })
-        })
-    }
-
-    pub fn preview_table_data_changes(
-        &self,
-        profile: &ConnectionProfile,
-        payload: &ApplyTableDataChangesPayload,
+        database_name: &str,
+        table_name: &str,
+        source_columns: Vec<TableColumn>,
     ) -> Result<SqlPreview> {
-        let design =
-            self.load_table_design(profile, &payload.database_name, &payload.table_name)?;
-        let primary_keys = design
-            .columns
-            .iter()
-            .filter(|column| column.primary_key)
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>();
-
-        ensure!(
-            !primary_keys.is_empty(),
-            "当前表未定义主键，为保证数据可靠性，本轮仅支持主键表编辑"
-        );
-
-        Ok(SqlPreview {
-            statements: preview_data_statements(payload, &design.columns)?,
-        })
-    }
-
-    pub fn execute_sql(
-        &self,
-        profile: &ConnectionProfile,
-        payload: &ExecuteSqlPayload,
-    ) -> Result<SqlConsoleResult> {
-        let limit = payload.limit.unwrap_or(200).clamp(1, 500);
-        let offset = payload.offset.unwrap_or(0);
-        let normalized_sql = normalize_console_sql(&payload.sql)?;
-
-        self.with_conn(profile, |connection| {
-            if let Some(database_name) = payload.database_name.as_deref() {
-                let normalized_database_name = normalize_identifier_name(database_name, "数据库名")?;
-                connection
-                    .query_drop(format!("USE {}", quote_identifier(&normalized_database_name)))
-                    .context("切换数据库失败")?;
-            }
-
-            if is_pageable_console_query(&normalized_sql) {
-                return execute_pageable_console_query(
-                    connection,
-                    profile,
-                    payload,
-                    &normalized_sql,
-                    offset,
-                    limit,
-                );
-            }
-
-            execute_direct_console_query(
-                connection,
-                profile,
-                payload,
-                &normalized_sql,
-                offset,
-                limit,
-            )
-        })
+        let current_columns = self.load_columns(profile, database_name, table_name)?;
+        let statements = build_alter_table_statements(
+            database_name,
+            table_name,
+            &current_columns,
+            &source_columns,
+        )?;
+        Ok(SqlPreview { statements })
     }
 
     fn load_columns(
@@ -607,7 +528,11 @@ impl MysqlService {
             .ip_or_hostname(Some(profile.host.clone()))
             .tcp_port(profile.port)
             .user(Some(profile.username.clone()))
-            .pass(Some(profile.password.clone()));
+            .pass(Some(profile.password.clone()))
+            .read_timeout(Some(Duration::from_secs(MYSQL_IO_TIMEOUT_SECS)))
+            .write_timeout(Some(Duration::from_secs(MYSQL_IO_TIMEOUT_SECS)))
+            .tcp_keepalive_time_ms(Some(MYSQL_TCP_KEEPALIVE_TIME_MS))
+            .stmt_cache_size(Some(MYSQL_STATEMENT_CACHE_SIZE));
 
         Pool::new(Opts::from(builder)).context("初始化 MySQL 连接池失败")
     }
@@ -643,164 +568,82 @@ fn build_table_data_row(
     })
 }
 
-fn execute_pageable_console_query(
-    connection: &mut PooledConn,
-    profile: &ConnectionProfile,
-    payload: &ExecuteSqlPayload,
-    normalized_sql: &str,
-    offset: u64,
+fn collect_page_window<T>(
+    rows: impl IntoIterator<Item = Result<T>>,
     limit: u64,
-) -> Result<SqlConsoleResult> {
-    let count_sql = format!(
-        "SELECT COUNT(*) FROM ({normalized_sql}) __zszc_console_count"
-    );
-    let total_rows = connection
-        .query_first::<u64, _>(count_sql)
-        .context("统计 SQL 结果失败")?
-        .unwrap_or(0);
+) -> Result<PageWindow<T>> {
+    let mut collected_rows = Vec::new();
 
-    let page_sql = format!(
-        "SELECT * FROM ({normalized_sql}) __zszc_console_page LIMIT {limit} OFFSET {offset}"
-    );
-    let mut result = connection
-        .query_iter(page_sql.as_str())
-        .context("执行 SQL 失败")?;
-
-    let columns = result
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|column| TableDataColumn {
-            name: column.name_str().to_string(),
-            data_type: format!("{:?}", column.column_type()).to_ascii_lowercase(),
-            nullable: true,
-            primary_key: false,
-            auto_increment: false,
-            default_value: None,
-            comment: String::new(),
-        })
-        .collect::<Vec<_>>();
-    let column_names = columns
-        .iter()
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-
-    let mut rows = Vec::new();
-    for row_result in result.by_ref() {
-        rows.push(build_table_data_row(row_result?, &column_names, &[])?);
+    for row in rows {
+        collected_rows.push(row?);
+        if collected_rows.len() as u64 > limit {
+            let total_rows = collected_rows.len() as u64;
+            collected_rows.truncate(limit as usize);
+            return Ok(PageWindow {
+                rows: collected_rows,
+                total_rows,
+                row_count_exact: false,
+                truncated: true,
+            });
+        }
     }
 
-    let range_start = if total_rows == 0 { 0 } else { offset + 1 };
-    let range_end = if total_rows == 0 {
-        0
-    } else {
-        offset + rows.len() as u64
-    };
-
-    Ok(SqlConsoleResult {
-        profile_id: profile.id.clone(),
-        database_name: payload.database_name.clone(),
-        executed_sql: normalized_sql.to_string(),
-        result_kind: "query".to_string(),
-        columns,
-        rows,
-        affected_rows: 0,
-        offset,
-        limit,
-        total_rows,
-        truncated: range_end < total_rows,
-        message: format!("查询成功，当前展示 {range_start}-{range_end} 行，共 {total_rows} 行"),
+    Ok(PageWindow {
+        total_rows: collected_rows.len() as u64,
+        rows: collected_rows,
+        row_count_exact: true,
+        truncated: false,
     })
 }
 
-fn execute_direct_console_query(
-    connection: &mut PooledConn,
-    profile: &ConnectionProfile,
-    payload: &ExecuteSqlPayload,
-    normalized_sql: &str,
+fn collect_offset_page_window<T>(
+    rows: impl IntoIterator<Item = Result<T>>,
     offset: u64,
     limit: u64,
-) -> Result<SqlConsoleResult> {
-    let mut result = connection
-        .query_iter(normalized_sql)
-        .context("执行 SQL 失败")?;
+) -> Result<PageWindow<T>> {
+    let mut total_rows = 0_u64;
+    let mut page_rows = Vec::new();
 
-    let columns = result
-        .columns()
-        .as_ref()
-        .iter()
-        .map(|column| TableDataColumn {
-            name: column.name_str().to_string(),
-            data_type: format!("{:?}", column.column_type()).to_ascii_lowercase(),
-            nullable: true,
-            primary_key: false,
-            auto_increment: false,
-            default_value: None,
-            comment: String::new(),
-        })
-        .collect::<Vec<_>>();
+    for row in rows {
+        let row = row?;
+        if total_rows < offset {
+            total_rows += 1;
+            continue;
+        }
 
-    if columns.is_empty() {
-        let affected_rows = result.affected_rows();
-        let info = result.info_str().to_string();
+        if page_rows.len() as u64 >= limit {
+            total_rows += 1;
+            return Ok(PageWindow {
+                rows: page_rows,
+                total_rows,
+                row_count_exact: false,
+                truncated: true,
+            });
+        }
 
-        return Ok(SqlConsoleResult {
-            profile_id: profile.id.clone(),
-            database_name: payload.database_name.clone(),
-            executed_sql: normalized_sql.to_string(),
-            result_kind: "mutation".to_string(),
-            columns: vec![],
-            rows: vec![],
-            affected_rows,
-            offset: 0,
-            limit,
-            total_rows: 0,
-            truncated: false,
-            message: if info.trim().is_empty() {
-                format!("语句执行成功，影响 {affected_rows} 行")
-            } else {
-                info
-            },
-        });
+        total_rows += 1;
+        page_rows.push(row);
     }
 
-    let column_names = columns
-        .iter()
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-    let mut all_rows = Vec::new();
-
-    for row_result in result.by_ref() {
-        all_rows.push(build_table_data_row(row_result?, &column_names, &[])?);
-    }
-
-    let total_rows = all_rows.len() as u64;
-    let rows = all_rows
-        .into_iter()
-        .skip(offset as usize)
-        .take(limit as usize)
-        .collect::<Vec<_>>();
-    let range_start = if total_rows == 0 { 0 } else { offset + 1 };
-    let range_end = if total_rows == 0 {
-        0
-    } else {
-        offset + rows.len() as u64
-    };
-
-    Ok(SqlConsoleResult {
-        profile_id: profile.id.clone(),
-        database_name: payload.database_name.clone(),
-        executed_sql: normalized_sql.to_string(),
-        result_kind: "query".to_string(),
-        columns,
-        rows,
-        affected_rows: 0,
-        offset,
-        limit,
+    Ok(PageWindow {
+        rows: page_rows,
         total_rows,
-        truncated: range_end < total_rows,
-        message: format!("查询成功，当前展示 {range_start}-{range_end} 行，共 {total_rows} 行"),
+        row_count_exact: true,
+        truncated: false,
     })
+}
+
+fn build_query_page_message(
+    range_start: u64,
+    range_end: u64,
+    total_rows: u64,
+    row_count_exact: bool,
+) -> String {
+    if row_count_exact {
+        return format!("查询成功，当前展示 {range_start}-{range_end} 行，共 {total_rows} 行");
+    }
+
+    format!("查询成功，当前展示 {range_start}-{range_end} 行，结果总数未统计")
 }
 
 fn validate_raw_clause(raw_clause: Option<&str>) -> Result<()> {
@@ -1123,218 +966,6 @@ fn render_default_value(data_type: &str, default_value: &str) -> String {
 
 fn quote_string_literal(raw: &str) -> String {
     format!("'{}'", raw.replace('\\', "\\\\").replace('\'', "\\'"))
-}
-
-fn preview_data_statements(
-    payload: &ApplyTableDataChangesPayload,
-    columns: &[TableColumn],
-) -> Result<Vec<String>> {
-    let primary_keys = columns
-        .iter()
-        .filter(|column| column.primary_key)
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-
-    let mut statements = Vec::new();
-
-    for deleted_row in &payload.deleted_rows {
-        let (statement, _) = build_delete_statement(
-            &payload.database_name,
-            &payload.table_name,
-            &primary_keys,
-            deleted_row,
-        )?;
-        statements.push(statement);
-    }
-
-    for updated_row in &payload.updated_rows {
-        let (statement, _) = build_update_statement(
-            &payload.database_name,
-            &payload.table_name,
-            columns,
-            &primary_keys,
-            updated_row,
-        )?;
-        if !statement.is_empty() {
-            statements.push(statement);
-        }
-    }
-
-    for inserted_row in &payload.inserted_rows {
-        let (statement, _) = build_insert_statement(
-            &payload.database_name,
-            &payload.table_name,
-            columns,
-            inserted_row,
-        )?;
-        statements.push(statement);
-    }
-
-    Ok(statements)
-}
-
-fn build_delete_statement(
-    database_name: &str,
-    table_name: &str,
-    primary_keys: &[String],
-    deleted_row: &DeletedRowPayload,
-) -> Result<(String, Vec<Value>)> {
-    let where_clause = build_primary_key_where_clause(primary_keys, &deleted_row.row_key)?;
-    let params = primary_keys
-        .iter()
-        .map(|primary_key| {
-            deleted_row
-                .row_key
-                .get(primary_key)
-                .ok_or_else(|| anyhow!("缺少主键字段: {primary_key}"))
-                .and_then(json_to_mysql_value)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok((
-        format!(
-            "DELETE FROM {}.{} WHERE {}",
-            quote_identifier(database_name),
-            quote_identifier(table_name),
-            where_clause
-        ),
-        params,
-    ))
-}
-
-fn build_update_statement(
-    database_name: &str,
-    table_name: &str,
-    columns: &[TableColumn],
-    primary_keys: &[String],
-    updated_row: &UpdatedRowPayload,
-) -> Result<(String, Vec<Value>)> {
-    let set_columns = columns
-        .iter()
-        .map(|column| column.name.clone())
-        .filter(|column_name| updated_row.values.contains_key(column_name))
-        .collect::<Vec<_>>();
-
-    if set_columns.is_empty() {
-        return Ok((String::new(), vec![]));
-    }
-
-    let set_clause = set_columns
-        .iter()
-        .map(|column_name| format!("{} = ?", quote_identifier(column_name)))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let mut params = set_columns
-        .iter()
-        .map(|column_name| {
-            updated_row
-                .values
-                .get(column_name)
-                .ok_or_else(|| anyhow!("缺少更新字段: {column_name}"))
-                .and_then(json_to_mysql_value)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    let where_clause = build_primary_key_where_clause(primary_keys, &updated_row.row_key)?;
-    let key_params = primary_keys
-        .iter()
-        .map(|primary_key| {
-            updated_row
-                .row_key
-                .get(primary_key)
-                .ok_or_else(|| anyhow!("缺少主键字段: {primary_key}"))
-                .and_then(json_to_mysql_value)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    params.extend(key_params);
-
-    Ok((
-        format!(
-            "UPDATE {}.{} SET {} WHERE {}",
-            quote_identifier(database_name),
-            quote_identifier(table_name),
-            set_clause,
-            where_clause
-        ),
-        params,
-    ))
-}
-
-fn build_insert_statement(
-    database_name: &str,
-    table_name: &str,
-    columns: &[TableColumn],
-    inserted_row: &InsertedRowPayload,
-) -> Result<(String, Vec<Value>)> {
-    let insertable_columns = columns
-        .iter()
-        .filter(|column| {
-            inserted_row.values.contains_key(&column.name)
-                && !(column.auto_increment
-                    && inserted_row
-                        .values
-                        .get(&column.name)
-                        .is_some_and(JsonValue::is_null))
-        })
-        .map(|column| column.name.clone())
-        .collect::<Vec<_>>();
-
-    if insertable_columns.is_empty() {
-        return Ok((
-            format!(
-                "INSERT INTO {}.{} () VALUES ()",
-                quote_identifier(database_name),
-                quote_identifier(table_name)
-            ),
-            vec![],
-        ));
-    }
-
-    let placeholders = vec!["?"; insertable_columns.len()].join(", ");
-    let params = insertable_columns
-        .iter()
-        .map(|column_name| {
-            inserted_row
-                .values
-                .get(column_name)
-                .ok_or_else(|| anyhow!("缺少新增字段: {column_name}"))
-                .and_then(json_to_mysql_value)
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok((
-        format!(
-            "INSERT INTO {}.{} ({}) VALUES ({})",
-            quote_identifier(database_name),
-            quote_identifier(table_name),
-            insertable_columns
-                .iter()
-                .map(|column_name| quote_identifier(column_name))
-                .collect::<Vec<_>>()
-                .join(", "),
-            placeholders
-        ),
-        params,
-    ))
-}
-
-fn build_primary_key_where_clause(primary_keys: &[String], row_key: &JsonRecord) -> Result<String> {
-    ensure!(!primary_keys.is_empty(), "当前表没有主键");
-    ensure!(!row_key.is_empty(), "主键值不能为空");
-
-    Ok(primary_keys
-        .iter()
-        .map(|primary_key| {
-            ensure!(
-                row_key.contains_key(primary_key),
-                "缺少主键字段: {primary_key}"
-            );
-            Ok(format!("{} = ?", quote_identifier(primary_key)))
-        })
-        .collect::<Result<Vec<_>>>()?
-        .join(" AND "))
 }
 
 fn json_to_mysql_value(value: &JsonValue) -> Result<Value> {

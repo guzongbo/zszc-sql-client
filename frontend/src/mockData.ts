@@ -1,19 +1,53 @@
 import type {
   AppBootstrap,
   ApplyTableDataChangesPayload,
+  ChooseFilePayload,
+  CompareDetailPageRequest,
+  CompareDetailPageResponse,
+  CompareHistoryInput,
+  CompareHistoryItem,
+  CompareHistoryPerformance,
+  CompareTableDiscoveryRequest,
+  CompareTableDiscoveryResponse,
+  CompareTaskCancelResponse,
+  CompareTaskProgressResponse,
+  CompareTaskResultResponse,
+  CompareTaskStartResponse,
   ConnectionProfile,
   ConnectionTestResult,
+  CreateDataSourceGroupPayload,
   CreateDatabasePayload,
   CreateTablePayload,
+  DataCompareRequest,
+  DataCompareResponse,
   DatabaseEntry,
+  DataSourceGroup,
+  DeleteDataSourceGroupResult,
   ExecuteSqlPayload,
+  ExportSqlFileRequest,
+  ExportSqlFileResponse,
+  ImportConnectionProfilesResult,
   JsonRecord,
+  LoadSqlAutocompletePayload,
   LoadTableDataPayload,
   MutationResult,
+  RenameDataSourceGroupPayload,
+  RenameDataSourceGroupResult,
+  RowSample,
   SaveConnectionProfilePayload,
+  SaveFileDialogResult,
+  SqlAutocompleteSchema,
   SqlConsoleResult,
   SqlPreview,
+  StructureCompareDetailRequest,
+  StructureCompareDetailResponse,
+  StructureCompareRequest,
+  StructureCompareResponse,
+  StructureExportSqlFileRequest,
+  StructureExportSqlFileResponse,
+  StructureTableItem,
   TableColumn,
+  TableCompareResult,
   TableColumnSummary,
   TableDataPage,
   TableDataRow,
@@ -22,6 +56,7 @@ import type {
   TableDdl,
   TableEntry,
   TableIdentity,
+  UpdateSample,
 } from './types'
 
 const now = '2026-04-09T10:00:00+08:00'
@@ -51,10 +86,20 @@ let connectionProfiles: ConnectionProfile[] = [
   },
 ]
 
+let dataSourceGroups: DataSourceGroup[] = [
+  {
+    id: 'mock-group-framework',
+    group_name: '框架协议',
+    created_at: now,
+    updated_at: now,
+  },
+]
+
 const tableDesignKey = 'mock-prod-srm:cd_biz_srm:performance_assess'
 const altTableDesignKey = 'mock-prod-srm:cd_biz_srm:performance_assess_supplier'
+const testTableDesignKey = 'mock-test-srm:cd_biz_srm:performance_assess'
 
-let tableDesigns: Record<string, TableDesign> = {
+const tableDesigns: Record<string, TableDesign> = {
   [tableDesignKey]: {
     profile_id: 'mock-prod-srm',
     database_name: 'cd_biz_srm',
@@ -99,28 +144,63 @@ let tableDesigns: Record<string, TableDesign> = {
       buildColumn('score', 'decimal', 10, 2, true, false, false, '0', '评分', 3),
     ],
   },
+  [testTableDesignKey]: {
+    profile_id: 'mock-test-srm',
+    database_name: 'cd_biz_srm',
+    table_name: 'performance_assess',
+    ddl: `CREATE TABLE \`performance_assess\` (
+  \`id\` bigint NOT NULL AUTO_INCREMENT COMMENT '主键ID',
+  \`assess_name\` varchar(64) NOT NULL COMMENT '评价名称',
+  \`assess_type\` tinyint(3) NOT NULL DEFAULT '2' COMMENT '评价类型',
+  \`insert_person_id\` bigint NOT NULL COMMENT '创建人ID',
+  \`insert_person_name\` varchar(64) NOT NULL COMMENT '创建人姓名',
+  \`insert_time\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  \`extra_flag\` varchar(16) DEFAULT NULL COMMENT '额外标识',
+  PRIMARY KEY (\`id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='绩效考核';`,
+    columns: [
+      buildColumn('id', 'bigint', 20, null, false, true, true, null, '主键ID', 1),
+      buildColumn('assess_name', 'varchar', 64, null, false, false, false, null, '评价名称', 2),
+      buildColumn('assess_type', 'tinyint', 3, 0, false, false, false, '2', '评价类型', 3),
+      buildColumn('insert_person_id', 'bigint', 20, null, false, false, false, null, '创建人ID', 4),
+      buildColumn('insert_person_name', 'varchar', 64, null, false, false, false, null, '创建人姓名', 5),
+      buildColumn(
+        'insert_time',
+        'datetime',
+        null,
+        null,
+        false,
+        false,
+        false,
+        'CURRENT_TIMESTAMP',
+        '创建时间',
+        6,
+      ),
+      buildColumn('extra_flag', 'varchar', 16, null, true, false, false, null, '额外标识', 7),
+    ],
+  },
 }
 
-let tableRows: Record<string, TableDataRow[]> = {
+const tableRows: Record<string, TableDataRow[]> = {
   [tableDesignKey]: [
     {
-      row_key: { id: 1991418341324681201 },
+      row_key: { id: 1991418341324681 },
       values: {
-        id: 1991418341324681201,
+        id: 1991418341324681,
         assess_name: '年度评价',
         assess_type: 3,
-        insert_person_id: 1740641443703345100,
+        insert_person_id: 1740641443703345,
         insert_person_name: '钟远和',
         insert_time: '2025-11-20 10:24:30',
       },
     },
     {
-      row_key: { id: 1991418341324681202 },
+      row_key: { id: 1991418341324682 },
       values: {
-        id: 1991418341324681202,
+        id: 1991418341324682,
         assess_name: '季度评价',
         assess_type: 2,
-        insert_person_id: 1740641443703345101,
+        insert_person_id: 1740641443703346,
         insert_person_name: '王晓岚',
         insert_time: '2025-12-02 16:18:11',
       },
@@ -133,6 +213,32 @@ let tableRows: Record<string, TableDataRow[]> = {
         id: 1,
         supplier_name: '成都明悦科技',
         score: 93.5,
+      },
+    },
+  ],
+  [testTableDesignKey]: [
+    {
+      row_key: { id: 1991418341324681 },
+      values: {
+        id: 1991418341324681,
+        assess_name: '年度评价',
+        assess_type: 2,
+        insert_person_id: 1740641443703345,
+        insert_person_name: '钟远和',
+        insert_time: '2025-11-20 10:24:30',
+        extra_flag: 'legacy',
+      },
+    },
+    {
+      row_key: { id: 1991418341324683 },
+      values: {
+        id: 1991418341324683,
+        assess_name: '半年度评价',
+        assess_type: 1,
+        insert_person_id: 1740641443703347,
+        insert_person_name: '陈初雪',
+        insert_time: '2025-12-08 08:12:45',
+        extra_flag: 'stale',
       },
     },
   ],
@@ -163,6 +269,10 @@ const tablesByDatabase: Record<string, TableEntry[]> = {
     { name: 'performance_assess', table_rows: 2, column_count: 6 },
   ],
 }
+
+let compareHistoryItems: CompareHistoryItem[] = []
+let compareTaskCounter = 0
+const compareTaskResults = new Map<string, DataCompareResponse>()
 
 function buildColumn(
   name: string,
@@ -202,6 +312,441 @@ function buildTableKey(identity: TableIdentity) {
   return `${identity.profile_id}:${identity.database_name}:${identity.table_name}`
 }
 
+function buildCompareTableKey(
+  profileId: string,
+  databaseName: string,
+  tableName: string,
+) {
+  return `${profileId}:${databaseName}:${tableName}`
+}
+
+function normalizeCompareTableMode(
+  tableMode: string,
+): 'all' | 'selected' {
+  return tableMode === 'selected' ? 'selected' : 'all'
+}
+
+function toComparableRow(
+  row: TableDataRow,
+  columns: string[],
+): JsonRecord {
+  if (columns.length === 0) {
+    return { ...row.values }
+  }
+
+  return columns.reduce<JsonRecord>((accumulator, column) => {
+    accumulator[column] = row.values[column] ?? null
+    return accumulator
+  }, {})
+}
+
+function stringifyRecord(record: JsonRecord) {
+  return JSON.stringify(record)
+}
+
+function getComparePreviewLimit(payload: DataCompareRequest) {
+  return Math.min(Math.max(payload.preview_limit ?? 20, 1), 100)
+}
+
+function discoverCommonTables(
+  payload: CompareTableDiscoveryRequest,
+): CompareTableDiscoveryResponse {
+  const sourceTables =
+    tablesByDatabase[`${payload.source_profile_id}:${payload.source_database_name}`]?.map(
+      (table) => table.name,
+    ) ?? []
+  const targetTables =
+    tablesByDatabase[`${payload.target_profile_id}:${payload.target_database_name}`]?.map(
+      (table) => table.name,
+    ) ?? []
+  const targetSet = new Set(targetTables)
+
+  return {
+    source_tables: sourceTables,
+    target_tables: targetTables,
+    common_tables: sourceTables.filter((table) => targetSet.has(table)),
+  }
+}
+
+function compareSingleTable(
+  payload: DataCompareRequest,
+  tableName: string,
+  collectFullDetails = false,
+) {
+  const sourceDesign =
+    tableDesigns[buildCompareTableKey(payload.source_profile_id, payload.source_database_name, tableName)]
+  const targetDesign =
+    tableDesigns[buildCompareTableKey(payload.target_profile_id, payload.target_database_name, tableName)]
+  if (!sourceDesign || !targetDesign) {
+    throw new Error(`表 ${tableName} 在 mock 数据中不存在`)
+  }
+
+  const sourceColumns = sourceDesign.columns.map((column) => column.name)
+  const targetColumns = new Set(targetDesign.columns.map((column) => column.name))
+  const comparedColumns = sourceColumns.filter((column) => targetColumns.has(column))
+  const sourcePrimaryKeys = sourceDesign.columns
+    .filter((column) => column.primary_key)
+    .map((column) => column.name)
+  const targetPrimaryKeys = targetDesign.columns
+    .filter((column) => column.primary_key)
+    .map((column) => column.name)
+  const keyedMode =
+    sourcePrimaryKeys.length > 0 &&
+    sourcePrimaryKeys.join(',') === targetPrimaryKeys.join(',')
+  const warnings: string[] = []
+
+  const sourceMissingColumns = sourceColumns.filter((column) => !targetColumns.has(column))
+  if (sourceMissingColumns.length > 0) {
+    warnings.push(`目标表缺少字段: ${sourceMissingColumns.join(', ')}`)
+  }
+  const targetMissingColumns = targetDesign.columns
+    .map((column) => column.name)
+    .filter((column) => !new Set(sourceColumns).has(column))
+  if (targetMissingColumns.length > 0) {
+    warnings.push(`源表缺少字段: ${targetMissingColumns.join(', ')}`)
+  }
+  if (!keyedMode) {
+    warnings.push('当前表未满足同主键比较条件，更新项将不单独识别。')
+  }
+
+  const previewLimit = getComparePreviewLimit(payload)
+  const sourceRows =
+    tableRows[buildCompareTableKey(payload.source_profile_id, payload.source_database_name, tableName)] ??
+    []
+  const targetRows =
+    tableRows[buildCompareTableKey(payload.target_profile_id, payload.target_database_name, tableName)] ??
+    []
+
+  const sampleInserts: RowSample[] = []
+  const sampleUpdates: UpdateSample[] = []
+  const sampleDeletes: RowSample[] = []
+  const allInserts: RowSample[] = []
+  const allUpdates: UpdateSample[] = []
+  const allDeletes: RowSample[] = []
+
+  if (keyedMode) {
+    const buildKey = (row: TableDataRow) =>
+      stringifyRecord(
+        sourcePrimaryKeys.reduce<JsonRecord>((accumulator, key) => {
+          accumulator[key] = row.values[key] ?? null
+          return accumulator
+        }, {}),
+      )
+
+    const sourceMap = new Map(sourceRows.map((row) => [buildKey(row), row]))
+    const targetMap = new Map(targetRows.map((row) => [buildKey(row), row]))
+
+    sourceMap.forEach((sourceRow, signature) => {
+      const targetRow = targetMap.get(signature)
+      if (!targetRow) {
+        const sample = { signature, row: { ...sourceRow.values } }
+        allInserts.push(sample)
+        if (sampleInserts.length < previewLimit) {
+          sampleInserts.push(sample)
+        }
+        return
+      }
+
+      const diffColumns = comparedColumns.filter(
+        (column) => sourceRow.values[column] !== targetRow.values[column],
+      )
+      if (diffColumns.length === 0) {
+        return
+      }
+
+      const update: UpdateSample = {
+        signature,
+        key: sourcePrimaryKeys.reduce<JsonRecord>((accumulator, key) => {
+          accumulator[key] = sourceRow.values[key] ?? null
+          return accumulator
+        }, {}),
+        source_row: { ...sourceRow.values },
+        target_row: { ...targetRow.values },
+        diff_columns: diffColumns,
+      }
+      allUpdates.push(update)
+      if (sampleUpdates.length < previewLimit) {
+        sampleUpdates.push(update)
+      }
+    })
+
+    targetMap.forEach((targetRow, signature) => {
+      if (sourceMap.has(signature)) {
+        return
+      }
+      const sample = { signature, row: { ...targetRow.values } }
+      allDeletes.push(sample)
+      if (sampleDeletes.length < previewLimit) {
+        sampleDeletes.push(sample)
+      }
+    })
+  } else {
+    const signatureColumns = comparedColumns.length > 0 ? comparedColumns : sourceColumns
+    const sourceMultiSet = new Map<string, JsonRecord[]>()
+    const targetMultiSet = new Map<string, JsonRecord[]>()
+    sourceRows.forEach((row) => {
+      const comparable = toComparableRow(row, signatureColumns)
+      const signature = stringifyRecord(comparable)
+      sourceMultiSet.set(signature, [...(sourceMultiSet.get(signature) ?? []), { ...row.values }])
+    })
+    targetRows.forEach((row) => {
+      const comparable = toComparableRow(row, signatureColumns)
+      const signature = stringifyRecord(comparable)
+      targetMultiSet.set(signature, [...(targetMultiSet.get(signature) ?? []), { ...row.values }])
+    })
+
+    sourceMultiSet.forEach((rows, signature) => {
+      const targetCount = targetMultiSet.get(signature)?.length ?? 0
+      rows.slice(targetCount).forEach((row) => {
+        const sample = { signature, row }
+        allInserts.push(sample)
+        if (sampleInserts.length < previewLimit) {
+          sampleInserts.push(sample)
+        }
+      })
+    })
+
+    targetMultiSet.forEach((rows, signature) => {
+      const sourceCount = sourceMultiSet.get(signature)?.length ?? 0
+      rows.slice(sourceCount).forEach((row) => {
+        const sample = { signature, row }
+        allDeletes.push(sample)
+        if (sampleDeletes.length < previewLimit) {
+          sampleDeletes.push(sample)
+        }
+      })
+    })
+  }
+
+  const result: TableCompareResult = {
+    source_table: tableName,
+    target_table: tableName,
+    key_columns: keyedMode ? sourcePrimaryKeys : [],
+    compared_columns: comparedColumns,
+    compare_mode: keyedMode ? 'keyed' : 'full_row',
+    insert_count: allInserts.length,
+    update_count: allUpdates.length,
+    delete_count: allDeletes.length,
+    warnings,
+    sample_inserts: sampleInserts,
+    sample_updates: sampleUpdates,
+    sample_deletes: sampleDeletes,
+  }
+
+  return {
+    result,
+    inserts: collectFullDetails ? allInserts : [],
+    updates: collectFullDetails ? allUpdates : [],
+    deletes: collectFullDetails ? allDeletes : [],
+  }
+}
+
+function buildDataCompareResponse(
+  payload: DataCompareRequest,
+): DataCompareResponse {
+  const discovery = discoverCommonTables({
+    source_profile_id: payload.source_profile_id,
+    source_database_name: payload.source_database_name,
+    target_profile_id: payload.target_profile_id,
+    target_database_name: payload.target_database_name,
+  })
+  const tableMode = normalizeCompareTableMode(payload.table_mode)
+  const selectedTables =
+    tableMode === 'selected' ? payload.selected_tables : discovery.common_tables
+  const commonSet = new Set(discovery.common_tables)
+  const tableResults = selectedTables
+    .filter((tableName) => commonSet.has(tableName))
+    .map((tableName) => compareSingleTable(payload, tableName).result)
+  const skippedTables = selectedTables
+    .filter((tableName) => !commonSet.has(tableName))
+    .map((tableName) => ({
+      source_table: tableName,
+      target_table: tableName,
+      reason: '源库与目标库不存在同名表',
+    }))
+
+  return {
+    compare_id: null,
+    summary: {
+      total_tables: tableResults.length,
+      compared_tables: tableResults.length,
+      skipped_tables: skippedTables.length,
+      total_insert_count: tableResults.reduce((sum, item) => sum + item.insert_count, 0),
+      total_update_count: tableResults.reduce((sum, item) => sum + item.update_count, 0),
+      total_delete_count: tableResults.reduce((sum, item) => sum + item.delete_count, 0),
+      total_sql_statements: tableResults.reduce(
+        (sum, item) => sum + item.insert_count + item.update_count + item.delete_count,
+        0,
+      ),
+    },
+    skipped_tables: skippedTables,
+    table_results: tableResults,
+    performance: buildMockPerformance('数据对比', tableResults.length),
+  }
+}
+
+function buildDataCompareDetailPage(
+  payload: CompareDetailPageRequest,
+): CompareDetailPageResponse {
+  const tableDetail = compareSingleTable(payload.compare_request, payload.source_table, true)
+  const limit = Math.min(Math.max(payload.limit ?? 50, 1), 500)
+  const offset = Math.max(payload.offset ?? 0, 0)
+  if (payload.detail_type === 'update') {
+    const updateItems = tableDetail.updates.slice(offset, offset + limit)
+    return {
+      source_table: payload.source_table,
+      target_table: payload.target_table,
+      detail_type: payload.detail_type,
+      total: tableDetail.updates.length,
+      offset,
+      limit,
+      has_more: offset + limit < tableDetail.updates.length,
+      row_columns: tableDetail.result.compared_columns,
+      row_items: [],
+      update_items: updateItems,
+    }
+  }
+
+  const rows = payload.detail_type === 'insert' ? tableDetail.inserts : tableDetail.deletes
+  return {
+    source_table: payload.source_table,
+    target_table: payload.target_table,
+    detail_type: payload.detail_type,
+    total: rows.length,
+    offset,
+    limit,
+    has_more: offset + limit < rows.length,
+    row_columns: tableDetail.result.compared_columns,
+    row_items: rows.slice(offset, offset + limit),
+    update_items: [],
+  }
+}
+
+function buildStructureCompareResponse(
+  payload: StructureCompareRequest,
+): StructureCompareResponse {
+  const discovery = discoverCommonTables({
+    source_profile_id: payload.source_profile_id,
+    source_database_name: payload.source_database_name,
+    target_profile_id: payload.target_profile_id,
+    target_database_name: payload.target_database_name,
+  })
+  const sourceTables = discovery.source_tables
+  const targetTables = discovery.target_tables
+  const sourceSet = new Set(sourceTables)
+  const targetSet = new Set(targetTables)
+  const addedTables = sourceTables
+    .filter((tableName) => !targetSet.has(tableName))
+    .map((tableName) => buildStructureTableItem(tableName))
+  const deletedTables = targetTables
+    .filter((tableName) => !sourceSet.has(tableName))
+    .map((tableName) => buildStructureTableItem(tableName))
+  const modifiedTables = discovery.common_tables
+    .filter((tableName) => {
+      const sourceDesign =
+        tableDesigns[buildCompareTableKey(payload.source_profile_id, payload.source_database_name, tableName)]
+      const targetDesign =
+        tableDesigns[buildCompareTableKey(payload.target_profile_id, payload.target_database_name, tableName)]
+      return sourceDesign?.ddl !== targetDesign?.ddl
+    })
+    .map((tableName) => buildStructureTableItem(tableName))
+
+  return {
+    summary: {
+      source_table_count: sourceTables.length,
+      target_table_count: targetTables.length,
+      added_table_count: addedTables.length,
+      modified_table_count: modifiedTables.length,
+      deleted_table_count: deletedTables.length,
+    },
+    added_tables: addedTables,
+    modified_tables: modifiedTables,
+    deleted_tables: deletedTables,
+    performance: buildMockPerformance('结构对比', sourceTables.length + targetTables.length),
+  }
+}
+
+function buildStructureTableItem(tableName: string): StructureTableItem {
+  return {
+    table_name: tableName,
+    preview_sql: null,
+    source_sql: null,
+    target_sql: null,
+    source_changed_lines: [],
+    target_changed_lines: [],
+    warnings: [],
+  }
+}
+
+function buildStructureCompareDetailResponse(
+  payload: StructureCompareDetailRequest,
+): StructureCompareDetailResponse {
+  const sourceDesign =
+    tableDesigns[
+      buildCompareTableKey(
+        payload.compare_request.source_profile_id,
+        payload.compare_request.source_database_name,
+        payload.table_name,
+      )
+    ]
+  const targetDesign =
+    tableDesigns[
+      buildCompareTableKey(
+        payload.compare_request.target_profile_id,
+        payload.compare_request.target_database_name,
+        payload.table_name,
+      )
+    ]
+
+  const detail: StructureTableItem = {
+    table_name: payload.table_name,
+    preview_sql:
+      payload.category === 'added'
+        ? sourceDesign?.ddl ?? null
+        : payload.category === 'deleted'
+          ? `DROP TABLE IF EXISTS \`${payload.compare_request.target_database_name}\`.\`${payload.table_name}\`;`
+          : `ALTER TABLE \`${payload.compare_request.target_database_name}\`.\`${payload.table_name}\` /* mock sync preview */;`,
+    source_sql: sourceDesign?.ddl ?? null,
+    target_sql: targetDesign?.ddl ?? null,
+    source_changed_lines: sourceDesign && targetDesign ? [2, 3] : [],
+    target_changed_lines: sourceDesign && targetDesign ? [2, 7] : [],
+    warnings:
+      payload.category === 'modified'
+        ? ['当前为 mock 结构详情，示例 SQL 仅用于 UI 演示。']
+        : [],
+  }
+
+  return {
+    category: payload.category,
+    table_name: payload.table_name,
+    detail,
+    performance: buildMockPerformance('结构详情', 1),
+  }
+}
+
+function buildMockPerformance(label: string, itemCount: number): CompareHistoryPerformance {
+  return {
+    total_elapsed_ms: 180 + itemCount * 24,
+    stages: [
+      {
+        key: 'prepare',
+        label: `${label}准备`,
+        elapsed_ms: 60,
+        item_count: itemCount,
+        note: null,
+      },
+      {
+        key: 'execute',
+        label: `${label}执行`,
+        elapsed_ms: 120 + itemCount * 24,
+        item_count: itemCount,
+        note: null,
+      },
+    ],
+    max_parallelism: 1,
+  }
+}
+
 export const mockApi = {
   async getAppBootstrap(): Promise<AppBootstrap> {
     return {
@@ -209,12 +754,142 @@ export const mockApi = {
       storage_engine: 'sqlite',
       app_data_dir: '/mock/zszc-sql-client',
       connection_profiles: connectionProfiles,
+      data_source_groups: sortDataSourceGroups(dataSourceGroups),
+    }
+  },
+
+  async createDataSourceGroup(
+    payload: CreateDataSourceGroupPayload,
+  ): Promise<DataSourceGroup> {
+    const groupName = payload.group_name.trim()
+    if (!groupName) {
+      throw new Error('分组名称不能为空')
+    }
+    if (dataSourceGroups.some((item) => item.group_name === groupName)) {
+      throw new Error('分组名称已存在')
+    }
+
+    const group: DataSourceGroup = {
+      id: `mock-group-${Date.now()}`,
+      group_name: groupName,
+      created_at: now,
+      updated_at: now,
+    }
+    dataSourceGroups = sortDataSourceGroups([...dataSourceGroups, group])
+    return group
+  },
+
+  async renameDataSourceGroup(
+    payload: RenameDataSourceGroupPayload,
+  ): Promise<RenameDataSourceGroupResult> {
+    const nextGroupName = payload.group_name.trim()
+    if (!nextGroupName) {
+      throw new Error('分组名称不能为空')
+    }
+
+    const currentGroup = dataSourceGroups.find((item) => item.id === payload.group_id)
+    if (!currentGroup) {
+      throw new Error('数据源分组不存在')
+    }
+    if (
+      dataSourceGroups.some(
+        (item) => item.id !== payload.group_id && item.group_name === nextGroupName,
+      )
+    ) {
+      throw new Error('分组名称已存在')
+    }
+
+    const previousGroupName = currentGroup.group_name
+    dataSourceGroups = sortDataSourceGroups(
+      dataSourceGroups.map((item) =>
+        item.id === payload.group_id
+          ? { ...item, group_name: nextGroupName, updated_at: now }
+          : item,
+      ),
+    )
+
+    const affectedProfileCount = connectionProfiles.filter(
+      (item) => item.group_name === previousGroupName,
+    ).length
+    connectionProfiles = connectionProfiles.map((item) =>
+      item.group_name === previousGroupName
+        ? { ...item, group_name: nextGroupName, updated_at: now }
+        : item,
+    )
+
+    return {
+      group_id: payload.group_id,
+      previous_group_name: previousGroupName,
+      group_name: nextGroupName,
+      affected_profile_count: affectedProfileCount,
+    }
+  },
+
+  async deleteDataSourceGroup(groupId: string): Promise<DeleteDataSourceGroupResult> {
+    const currentGroup = dataSourceGroups.find((item) => item.id === groupId)
+    if (!currentGroup) {
+      throw new Error('数据源分组不存在')
+    }
+
+    dataSourceGroups = dataSourceGroups.filter((item) => item.id !== groupId)
+    const affectedProfileCount = connectionProfiles.filter(
+      (item) => item.group_name === currentGroup.group_name,
+    ).length
+    connectionProfiles = connectionProfiles.map((item) =>
+      item.group_name === currentGroup.group_name
+        ? { ...item, group_name: null, updated_at: now }
+        : item,
+    )
+
+    return {
+      group_id: groupId,
+      group_name: currentGroup.group_name,
+      affected_profile_count: affectedProfileCount,
+    }
+  },
+
+  async importNavicatConnectionProfiles(): Promise<ImportConnectionProfilesResult> {
+    const profile: ConnectionProfile = {
+      id: `mock-navicat-${Date.now()}`,
+      group_name: 'Navicat 导入',
+      data_source_name: 'Navicat-采购联调库',
+      host: '10.20.9.18',
+      port: 3306,
+      username: 'navicat_user',
+      password: '******',
+      created_at: now,
+      updated_at: now,
+    }
+    connectionProfiles = [...connectionProfiles, profile]
+    ensureMockGroupExists(profile.group_name)
+    databasesByProfile[profile.id] = [{ name: 'cd_biz_sync', table_count: 3 }]
+    tablesByDatabase[`${profile.id}:cd_biz_sync`] = [
+      { name: 'sync_job', table_rows: 12, column_count: 6 },
+    ]
+
+    return {
+      canceled: false,
+      file_path: '/mock/NavicatConnections.ncx',
+      total_count: 1,
+      created_count: 1,
+      updated_count: 0,
+      unresolved_password_count: 0,
+      skipped_count: 0,
+      imported_items: [
+        {
+          id: profile.id,
+          data_source_name: profile.data_source_name,
+          password_resolved: true,
+        },
+      ],
+      skipped_items: [],
     }
   },
 
   async saveConnectionProfile(
     payload: SaveConnectionProfilePayload,
   ): Promise<ConnectionProfile> {
+    ensureMockGroupExists(payload.group_name ?? null)
     const profile: ConnectionProfile = {
       id: payload.id ?? `mock-${Date.now()}`,
       group_name: payload.group_name ?? null,
@@ -275,6 +950,173 @@ export const mockApi = {
 
   async listDatabaseTables(profileId: string, databaseName: string): Promise<TableEntry[]> {
     return tablesByDatabase[`${profileId}:${databaseName}`] ?? []
+  },
+
+  async loadSqlAutocomplete(
+    payload: LoadSqlAutocompletePayload,
+  ): Promise<SqlAutocompleteSchema> {
+    const tables = (tablesByDatabase[`${payload.profile_id}:${payload.database_name}`] ?? []).map(
+      (table) => {
+        const design = tableDesigns[
+          `${payload.profile_id}:${payload.database_name}:${table.name}`
+        ]
+
+        return {
+          name: table.name,
+          columns:
+            design?.columns.map((column) => ({
+              name: column.name,
+              data_type: column.full_data_type,
+              nullable: column.nullable,
+              primary_key: column.primary_key,
+              auto_increment: column.auto_increment,
+              comment: column.comment,
+            })) ?? [],
+        }
+      },
+    )
+
+    return {
+      profile_id: payload.profile_id,
+      database_name: payload.database_name,
+      tables,
+    }
+  },
+
+  async compareDiscoverTables(
+    payload: CompareTableDiscoveryRequest,
+  ): Promise<CompareTableDiscoveryResponse> {
+    return discoverCommonTables(payload)
+  },
+
+  async runDataCompare(payload: DataCompareRequest): Promise<DataCompareResponse> {
+    return buildDataCompareResponse(payload)
+  },
+
+  async startDataCompareTask(
+    payload: DataCompareRequest,
+  ): Promise<CompareTaskStartResponse> {
+    compareTaskCounter += 1
+    const compareId = `mock-compare-${compareTaskCounter}`
+    compareTaskResults.set(compareId, buildDataCompareResponse(payload))
+    return { compare_id: compareId }
+  },
+
+  async getDataCompareTaskProgress(
+    compareId: string,
+  ): Promise<CompareTaskProgressResponse> {
+    const result = compareTaskResults.get(compareId)
+    return {
+      compare_id: compareId,
+      status: result ? 'completed' : 'failed',
+      total_tables: result?.summary.total_tables ?? 0,
+      completed_tables: result?.summary.compared_tables ?? 0,
+      current_table: null,
+      current_phase: result ? 'completed' : null,
+      current_phase_progress: result
+        ? {
+            current: result.summary.compared_tables,
+            total: result.summary.total_tables,
+          }
+        : null,
+      error_message: result ? null : 'mock 任务不存在',
+    }
+  },
+
+  async getDataCompareTaskResult(
+    compareId: string,
+  ): Promise<CompareTaskResultResponse> {
+    const result = compareTaskResults.get(compareId) ?? null
+    compareTaskResults.delete(compareId)
+    return {
+      compare_id: compareId,
+      status: result ? 'completed' : 'failed',
+      result,
+      error_message: result ? null : 'mock 任务不存在',
+    }
+  },
+
+  async cancelDataCompareTask(
+    compareId: string,
+  ): Promise<CompareTaskCancelResponse> {
+    compareTaskResults.delete(compareId)
+    return {
+      compare_id: compareId,
+      accepted: true,
+    }
+  },
+
+  async chooseSqlExportPath(
+    payload?: ChooseFilePayload,
+  ): Promise<SaveFileDialogResult> {
+    const defaultFileName = payload?.default_file_name?.trim() || 'mock-export.sql'
+    return {
+      canceled: false,
+      file_path: `/tmp/${defaultFileName}`,
+    }
+  },
+
+  async loadDataCompareDetailPage(
+    payload: CompareDetailPageRequest,
+  ): Promise<CompareDetailPageResponse> {
+    return buildDataCompareDetailPage(payload)
+  },
+
+  async exportDataCompareSqlFile(
+    payload: ExportSqlFileRequest,
+  ): Promise<ExportSqlFileResponse> {
+    return {
+      file_path: payload.file_path,
+      insert_count: payload.table_selections.reduce(
+        (total, item) => total + (item.insert_enabled ? 1 : 0),
+        0,
+      ),
+      update_count: payload.table_selections.reduce(
+        (total, item) => total + (item.update_enabled ? 1 : 0),
+        0,
+      ),
+      delete_count: payload.table_selections.reduce(
+        (total, item) => total + (item.delete_enabled ? 1 : 0),
+        0,
+      ),
+    }
+  },
+
+  async runStructureCompare(
+    payload: StructureCompareRequest,
+  ): Promise<StructureCompareResponse> {
+    return buildStructureCompareResponse(payload)
+  },
+
+  async loadStructureCompareDetail(
+    payload: StructureCompareDetailRequest,
+  ): Promise<StructureCompareDetailResponse> {
+    return buildStructureCompareDetailResponse(payload)
+  },
+
+  async exportStructureCompareSqlFile(
+    payload: StructureExportSqlFileRequest,
+  ): Promise<StructureExportSqlFileResponse> {
+    return {
+      file_path: payload.file_path,
+      added_count: payload.selection.added_tables.length,
+      modified_count: payload.selection.modified_tables.length,
+      deleted_count: payload.selection.deleted_tables.length,
+    }
+  },
+
+  async listCompareHistory(limit = 100): Promise<CompareHistoryItem[]> {
+    return structuredClone(compareHistoryItems.slice(0, limit))
+  },
+
+  async addCompareHistory(payload: CompareHistoryInput): Promise<CompareHistoryItem> {
+    const item: CompareHistoryItem = {
+      ...payload,
+      id: Date.now(),
+      created_at: new Date().toISOString(),
+    }
+    compareHistoryItems = [item, ...compareHistoryItems]
+    return structuredClone(item)
   },
 
   async listTableColumns(payload: TableIdentity): Promise<TableColumnSummary[]> {
@@ -402,6 +1244,7 @@ export const mockApi = {
       offset,
       limit,
       total_rows: rows.length,
+      row_count_exact: true,
       editable: true,
     }
   },
@@ -515,6 +1358,7 @@ export const mockApi = {
         offset,
         limit,
         total_rows: totalRows,
+        row_count_exact: true,
         truncated: false,
         message: 'Mock 模式下已返回示例查询结果。',
       }
@@ -531,10 +1375,37 @@ export const mockApi = {
       offset: 0,
       limit,
       total_rows: 0,
+      row_count_exact: true,
       truncated: false,
       message: 'Mock 模式下语句已执行。',
     }
   },
+}
+
+function ensureMockGroupExists(groupName: string | null) {
+  const normalizedGroupName = groupName?.trim()
+  if (!normalizedGroupName) {
+    return
+  }
+  if (dataSourceGroups.some((item) => item.group_name === normalizedGroupName)) {
+    return
+  }
+
+  dataSourceGroups = sortDataSourceGroups([
+    ...dataSourceGroups,
+    {
+      id: `mock-group-${Date.now()}-${dataSourceGroups.length}`,
+      group_name: normalizedGroupName,
+      created_at: now,
+      updated_at: now,
+    },
+  ])
+}
+
+function sortDataSourceGroups(groups: DataSourceGroup[]) {
+  return [...groups].sort((left, right) =>
+    left.group_name.localeCompare(right.group_name, 'zh-CN'),
+  )
 }
 
 function generateMockDdl(

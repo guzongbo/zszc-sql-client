@@ -1,9 +1,6 @@
 name: desktop-package
 
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
 
 permissions:
@@ -47,30 +44,70 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix desktop
 
-      - name: Import Apple certificate
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.KEYCHAIN_PASSWORD != '' }}
+      - name: Prepare Apple signing
+        id: apple_signing
+        shell: bash
         run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_CERTIFICATE_PASSWORD:-}" || -z "${KEYCHAIN_PASSWORD:-}" ]]; then
+            echo "Apple 签名 secrets 未完整配置，回退到 ad-hoc 签名。"
+            exit 0
+          fi
+
+          if ! python3 - <<'PY'
+          import base64
+          import os
+          import pathlib
+          import sys
+
+          raw = os.environ["APPLE_CERTIFICATE"].strip()
+          try:
+              data = base64.b64decode(raw, validate=True)
+          except Exception as exc:
+              print(f"::warning::APPLE_CERTIFICATE 不是有效的 Base64 P12 内容: {exc}")
+              sys.exit(1)
+
+          pathlib.Path("certificate.p12").write_bytes(data)
+          PY
+          then
+            echo "证书内容非法，回退到 ad-hoc 签名。"
+            exit 0
+          fi
+
+          rm -f build.keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+
+          if ! security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            echo "::warning::Apple 证书导入失败，回退到 ad-hoc 签名。请检查 APPLE_CERTIFICATE 是否为 Base64 编码的 .p12，以及 APPLE_CERTIFICATE_PASSWORD 是否正确。"
+            exit 0
+          fi
+
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-
-      - name: Export Apple signing identity
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.KEYCHAIN_PASSWORD != '' }}
-        run: |
-          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | head -n 1)
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -n 1 || true)
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          if [[ -z "$CERT_ID" ]]; then
+            echo "::warning::未在导入的 keychain 中找到可用的 codesign identity，回退到 ad-hoc 签名。"
+            exit 0
+          fi
 
-      - name: Build macOS arm64 DMG
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "signing_identity=$CERT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS arm64 DMG With Apple Signing
+        if: ${{ steps.apple_signing.outputs.enabled == 'true' }}
         env:
           APPLE_ID: ${{ env.APPLE_ID }}
           APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_signing.outputs.signing_identity }}
+        run: npm --prefix desktop run build:mac-arm64-dmg
+
+      - name: Build macOS arm64 DMG With Ad-hoc Signing
+        if: ${{ steps.apple_signing.outputs.enabled != 'true' }}
         run: npm --prefix desktop run build:mac-arm64-dmg
 
       - name: Upload macOS arm64 artifact
@@ -114,30 +151,70 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix desktop
 
-      - name: Import Apple certificate
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.KEYCHAIN_PASSWORD != '' }}
+      - name: Prepare Apple signing
+        id: apple_signing
+        shell: bash
         run: |
-          echo "$APPLE_CERTIFICATE" | base64 --decode > certificate.p12
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+
+          if [[ -z "${APPLE_CERTIFICATE:-}" || -z "${APPLE_CERTIFICATE_PASSWORD:-}" || -z "${KEYCHAIN_PASSWORD:-}" ]]; then
+            echo "Apple 签名 secrets 未完整配置，回退到 ad-hoc 签名。"
+            exit 0
+          fi
+
+          if ! python3 - <<'PY'
+          import base64
+          import os
+          import pathlib
+          import sys
+
+          raw = os.environ["APPLE_CERTIFICATE"].strip()
+          try:
+              data = base64.b64decode(raw, validate=True)
+          except Exception as exc:
+              print(f"::warning::APPLE_CERTIFICATE 不是有效的 Base64 P12 内容: {exc}")
+              sys.exit(1)
+
+          pathlib.Path("certificate.p12").write_bytes(data)
+          PY
+          then
+            echo "证书内容非法，回退到 ad-hoc 签名。"
+            exit 0
+          fi
+
+          rm -f build.keychain
           security create-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security default-keychain -s build.keychain
           security unlock-keychain -p "$KEYCHAIN_PASSWORD" build.keychain
           security set-keychain-settings -t 3600 -u build.keychain
-          security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+
+          if ! security import certificate.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign; then
+            echo "::warning::Apple 证书导入失败，回退到 ad-hoc 签名。请检查 APPLE_CERTIFICATE 是否为 Base64 编码的 .p12，以及 APPLE_CERTIFICATE_PASSWORD 是否正确。"
+            exit 0
+          fi
+
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" build.keychain
-
-      - name: Export Apple signing identity
-        if: ${{ env.APPLE_CERTIFICATE != '' && env.APPLE_CERTIFICATE_PASSWORD != '' && env.KEYCHAIN_PASSWORD != '' }}
-        run: |
-          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | head -n 1)
+          CERT_INFO=$(security find-identity -v -p codesigning build.keychain | grep '"' | head -n 1 || true)
           CERT_ID=$(echo "$CERT_INFO" | awk -F'"' '{print $2}')
-          echo "APPLE_SIGNING_IDENTITY=$CERT_ID" >> "$GITHUB_ENV"
+          if [[ -z "$CERT_ID" ]]; then
+            echo "::warning::未在导入的 keychain 中找到可用的 codesign identity，回退到 ad-hoc 签名。"
+            exit 0
+          fi
 
-      - name: Build macOS x64 DMG
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "signing_identity=$CERT_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Build macOS x64 DMG With Apple Signing
+        if: ${{ steps.apple_signing.outputs.enabled == 'true' }}
         env:
           APPLE_ID: ${{ env.APPLE_ID }}
           APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
           APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_SIGNING_IDENTITY: ${{ steps.apple_signing.outputs.signing_identity }}
+        run: npm --prefix desktop run build:mac-x64-dmg
+
+      - name: Build macOS x64 DMG With Ad-hoc Signing
+        if: ${{ steps.apple_signing.outputs.enabled != 'true' }}
         run: npm --prefix desktop run build:mac-x64-dmg
 
       - name: Upload macOS x64 artifact

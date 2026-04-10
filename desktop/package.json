@@ -4,11 +4,14 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build"
+    "dev": "tauri dev --config src-tauri/tauri.conf.json",
+    "build": "tauri build --config src-tauri/tauri.conf.json",
+    "build:dir": "tauri build --no-bundle --config src-tauri/tauri.conf.json",
+    "build:mac-arm64-dmg": "tauri build --bundles dmg --target aarch64-apple-darwin --config src-tauri/tauri.conf.json",
+    "build:mac-x64-dmg": "tauri build --bundles dmg --target x86_64-apple-darwin --config src-tauri/tauri.conf.json",
+    "build:win-x64-nsis": "tauri build --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1"
   }
 }
-

@@ -1,10 +1,17 @@
 name: desktop-package
 
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: desktop-package-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   mac-arm64:

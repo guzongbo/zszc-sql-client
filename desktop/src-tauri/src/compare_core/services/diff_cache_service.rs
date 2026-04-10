@@ -6,7 +6,7 @@ use std::{
 };
 
 use mysql_async::Value;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -20,7 +20,6 @@ use crate::{
     },
 };
 
-const CACHE_ROOT_DIR: &str = "mysql-data-compare";
 const CACHE_FILE_NAME: &str = "diff_results.sqlite3";
 const TABLE_CACHE_DIR: &str = "tables";
 const CACHE_RETENTION_HOURS: u64 = 24;
@@ -1370,7 +1369,12 @@ impl DiffCacheReader {
 }
 
 fn cache_root_path() -> PathBuf {
-    std::env::temp_dir().join(CACHE_ROOT_DIR)
+    let cache_dir_name = if cfg!(debug_assertions) {
+        "zszc-sql-client-dev"
+    } else {
+        "zszc-sql-client"
+    };
+    std::env::temp_dir().join(cache_dir_name)
 }
 
 fn initialize_manifest_schema(conn: &Connection) -> Result<(), AppError> {

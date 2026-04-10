@@ -577,6 +577,20 @@ impl LocalStore {
             ",
         )?;
 
+        let runtime_profile = if cfg!(debug_assertions) {
+            "dev"
+        } else {
+            "release"
+        };
+        connection.execute(
+            "
+            INSERT INTO app_meta (key, value)
+            VALUES ('runtime_profile', ?1)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            ",
+            [runtime_profile],
+        )?;
+
         self.migrate_connection_profiles(&connection)?;
         self.migrate_data_source_groups(&connection)?;
         self.migrate_compare_history(&connection)?;

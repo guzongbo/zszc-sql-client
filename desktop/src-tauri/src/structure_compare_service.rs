@@ -4,9 +4,9 @@ use crate::compare_core::models::desktop as core_desktop;
 use crate::compare_core::services::structure_compare_service as core_structure;
 use crate::models::{
     CompareHistoryPerformance, CompareHistoryPerformanceStage, ConnectionProfile,
-    StructureExportSqlFileRequest, StructureExportSqlFileResponse,
     StructureCompareDetailRequest, StructureCompareDetailResponse, StructureCompareRequest,
-    StructureCompareResponse, StructureCompareSummary, StructureDetailCategory, StructureTableItem,
+    StructureCompareResponse, StructureCompareSummary, StructureDetailCategory,
+    StructureExportSqlFileRequest, StructureExportSqlFileResponse, StructureTableItem,
 };
 use anyhow::{Result, anyhow};
 
@@ -163,7 +163,9 @@ fn to_core_db_config(
     }
 }
 
-fn map_structure_detail_category(category: StructureDetailCategory) -> core_api::StructureDetailCategory {
+fn map_structure_detail_category(
+    category: StructureDetailCategory,
+) -> core_api::StructureDetailCategory {
     match category {
         StructureDetailCategory::Added => core_api::StructureDetailCategory::Added,
         StructureDetailCategory::Modified => core_api::StructureDetailCategory::Modified,
@@ -183,7 +185,9 @@ fn map_structure_table_item(item: core_api::StructureTableItem) -> StructureTabl
     }
 }
 
-fn map_core_performance(performance: core_desktop::CompareHistoryPerformance) -> CompareHistoryPerformance {
+fn map_core_performance(
+    performance: core_desktop::CompareHistoryPerformance,
+) -> CompareHistoryPerformance {
     CompareHistoryPerformance {
         total_elapsed_ms: performance.total_elapsed_ms,
         stages: performance

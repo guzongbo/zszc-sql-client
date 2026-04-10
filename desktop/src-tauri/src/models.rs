@@ -235,6 +235,22 @@ pub struct TableDataPage {
     pub editable: bool,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportFileFormat {
+    Csv,
+    Json,
+    Sql,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportScope {
+    CurrentPage,
+    AllRows,
+    SelectedRows,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub struct ExecuteSqlPayload {
@@ -273,6 +289,155 @@ pub struct LoadTableDataPayload {
     pub order_by_clause: Option<String>,
     pub limit: Option<u64>,
     pub offset: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportTableDataFileRequest {
+    pub load_payload: LoadTableDataPayload,
+    pub file_path: String,
+    pub export_format: ExportFileFormat,
+    pub scope: ExportScope,
+    pub columns: Vec<TableDataColumn>,
+    pub rows: Vec<TableDataRow>,
+}
+
+impl ExportTableDataFileRequest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.load_payload.profile_id.trim().is_empty(),
+            "profile_id 不能为空"
+        );
+        ensure!(
+            !self.load_payload.database_name.trim().is_empty(),
+            "database_name 不能为空"
+        );
+        ensure!(
+            !self.load_payload.table_name.trim().is_empty(),
+            "table_name 不能为空"
+        );
+        ensure!(!self.file_path.trim().is_empty(), "file_path 不能为空");
+
+        if !matches!(self.scope, ExportScope::AllRows) {
+            ensure!(!self.columns.is_empty(), "导出列不能为空");
+        }
+        if matches!(self.scope, ExportScope::SelectedRows) {
+            ensure!(!self.rows.is_empty(), "请至少选择一行后再导出");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportTableDataSqlTextRequest {
+    pub load_payload: LoadTableDataPayload,
+    pub scope: ExportScope,
+    pub columns: Vec<TableDataColumn>,
+    pub rows: Vec<TableDataRow>,
+}
+
+impl ExportTableDataSqlTextRequest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.load_payload.profile_id.trim().is_empty(),
+            "profile_id 不能为空"
+        );
+        ensure!(
+            !self.load_payload.database_name.trim().is_empty(),
+            "database_name 不能为空"
+        );
+        ensure!(
+            !self.load_payload.table_name.trim().is_empty(),
+            "table_name 不能为空"
+        );
+
+        if !matches!(self.scope, ExportScope::AllRows) {
+            ensure!(!self.columns.is_empty(), "导出列不能为空");
+        }
+        if matches!(self.scope, ExportScope::SelectedRows) {
+            ensure!(!self.rows.is_empty(), "请至少选择一行后再复制 SQL");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportQueryResultFileRequest {
+    pub execute_payload: ExecuteSqlPayload,
+    pub file_path: String,
+    pub export_format: ExportFileFormat,
+    pub scope: ExportScope,
+    pub columns: Vec<TableDataColumn>,
+    pub rows: Vec<TableDataRow>,
+}
+
+impl ExportQueryResultFileRequest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.execute_payload.profile_id.trim().is_empty(),
+            "profile_id 不能为空"
+        );
+        ensure!(!self.execute_payload.sql.trim().is_empty(), "sql 不能为空");
+        ensure!(!self.file_path.trim().is_empty(), "file_path 不能为空");
+
+        if !matches!(self.scope, ExportScope::AllRows) {
+            ensure!(!self.columns.is_empty(), "导出列不能为空");
+        }
+        if matches!(self.scope, ExportScope::SelectedRows) {
+            ensure!(!self.rows.is_empty(), "请至少选择一行后再导出");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportQueryResultSqlTextRequest {
+    pub execute_payload: ExecuteSqlPayload,
+    pub scope: ExportScope,
+    pub columns: Vec<TableDataColumn>,
+    pub rows: Vec<TableDataRow>,
+}
+
+impl ExportQueryResultSqlTextRequest {
+    pub fn validate(&self) -> Result<()> {
+        ensure!(
+            !self.execute_payload.profile_id.trim().is_empty(),
+            "profile_id 不能为空"
+        );
+        ensure!(!self.execute_payload.sql.trim().is_empty(), "sql 不能为空");
+
+        if !matches!(self.scope, ExportScope::AllRows) {
+            ensure!(!self.columns.is_empty(), "导出列不能为空");
+        }
+        if matches!(self.scope, ExportScope::SelectedRows) {
+            ensure!(!self.rows.is_empty(), "请至少选择一行后再复制 SQL");
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportDataFileResponse {
+    pub file_path: String,
+    pub row_count: u64,
+    pub export_format: ExportFileFormat,
+    pub scope: ExportScope,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ExportSqlTextResponse {
+    pub content: String,
+    pub row_count: u64,
+    pub scope: ExportScope,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -832,8 +997,16 @@ pub struct SaveFileDialogResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct ChooseFileFilter {
+    pub name: String,
+    pub extensions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ChooseFilePayload {
     pub default_file_name: Option<String>,
+    pub filters: Option<Vec<ChooseFileFilter>>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]

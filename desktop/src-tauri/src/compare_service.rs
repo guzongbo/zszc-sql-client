@@ -2,11 +2,11 @@ use crate::compare_core::errors::AppError;
 use crate::compare_core::models::api as core_api;
 use crate::compare_core::services::compare_service as core_compare;
 use crate::models::{
-    CompareDetailPageRequest, CompareDetailPageResponse, CompareDetailType, CompareHistoryPerformance,
-    CompareHistoryPerformanceStage, CompareSummary, CompareTableDiscoveryResponse, CompareTaskPhase,
-    CompareTaskPhaseProgress, ConnectionProfile, DataCompareRequest, DataCompareResponse,
-    ExportSqlFileRequest, ExportSqlFileResponse, JsonRecord, RowSample, SkippedTable,
-    TableCompareResult, TableSqlSelection, UpdateSample,
+    CompareDetailPageRequest, CompareDetailPageResponse, CompareDetailType,
+    CompareHistoryPerformance, CompareHistoryPerformanceStage, CompareSummary,
+    CompareTableDiscoveryResponse, CompareTaskPhase, CompareTaskPhaseProgress, ConnectionProfile,
+    DataCompareRequest, DataCompareResponse, ExportSqlFileRequest, ExportSqlFileResponse,
+    JsonRecord, RowSample, SkippedTable, TableCompareResult, TableSqlSelection, UpdateSample,
 };
 use anyhow::{Result, anyhow};
 use serde_json::Value as JsonValue;
@@ -91,12 +91,12 @@ impl CompareService {
                     completed_tables: update.completed_tables,
                     current_table: update.current_table,
                     current_phase: map_core_compare_phase(update.current_phase),
-                    current_phase_progress: update.current_phase_progress.map(
-                        |progress| CompareTaskPhaseProgress {
+                    current_phase_progress: update.current_phase_progress.map(|progress| {
+                        CompareTaskPhaseProgress {
                             current: progress.current,
                             total: progress.total,
-                        },
-                    ),
+                        }
+                    }),
                 });
             }
         };
@@ -116,10 +116,7 @@ impl CompareService {
 
         let response = self
             .core
-            .compare_with_control(
-                &core_request,
-                control.map(|_| &core_control),
-            )
+            .compare_with_control(&core_request, control.map(|_| &core_control))
             .await
             .map_err(core_error_to_anyhow)?;
 
@@ -374,11 +371,7 @@ fn map_core_update_sample(item: core_api::UpdateSample) -> UpdateSample {
 }
 
 fn row_values_to_record(columns: &[String], values: Vec<JsonValue>) -> JsonRecord {
-    columns
-        .iter()
-        .cloned()
-        .zip(values)
-        .collect()
+    columns.iter().cloned().zip(values).collect()
 }
 
 fn json_value_to_record(value: JsonValue) -> JsonRecord {

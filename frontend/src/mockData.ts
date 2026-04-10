@@ -24,8 +24,14 @@ import type {
   DataSourceGroup,
   DeleteDataSourceGroupResult,
   ExecuteSqlPayload,
+  ExportDataFileResponse,
+  ExportQueryResultFileRequest,
+  ExportQueryResultSqlTextRequest,
   ExportSqlFileRequest,
   ExportSqlFileResponse,
+  ExportSqlTextResponse,
+  ExportTableDataFileRequest,
+  ExportTableDataSqlTextRequest,
   ImportConnectionProfilesResult,
   JsonRecord,
   LoadSqlAutocompletePayload,
@@ -1056,6 +1062,16 @@ export const mockApi = {
     }
   },
 
+  async chooseExportPath(payload?: ChooseFilePayload): Promise<SaveFileDialogResult> {
+    const fallbackExtension = payload?.filters?.[0]?.extensions?.[0] || 'csv'
+    const defaultFileName =
+      payload?.default_file_name?.trim() || `mock-export.${fallbackExtension}`
+    return {
+      canceled: false,
+      file_path: `/tmp/${defaultFileName}`,
+    }
+  },
+
   async loadDataCompareDetailPage(
     payload: CompareDetailPageRequest,
   ): Promise<CompareDetailPageResponse> {
@@ -1079,6 +1095,48 @@ export const mockApi = {
         (total, item) => total + (item.delete_enabled ? 1 : 0),
         0,
       ),
+    }
+  },
+
+  async exportTableDataFile(
+    payload: ExportTableDataFileRequest,
+  ): Promise<ExportDataFileResponse> {
+    return {
+      file_path: payload.file_path,
+      row_count: payload.rows.length,
+      export_format: payload.export_format,
+      scope: payload.scope,
+    }
+  },
+
+  async exportTableDataSqlText(
+    payload: ExportTableDataSqlTextRequest,
+  ): Promise<ExportSqlTextResponse> {
+    return {
+      content: `-- mock table export\n-- scope: ${payload.scope}\n`,
+      row_count: payload.rows.length,
+      scope: payload.scope,
+    }
+  },
+
+  async exportQueryResultFile(
+    payload: ExportQueryResultFileRequest,
+  ): Promise<ExportDataFileResponse> {
+    return {
+      file_path: payload.file_path,
+      row_count: payload.rows.length,
+      export_format: payload.export_format,
+      scope: payload.scope,
+    }
+  },
+
+  async exportQueryResultSqlText(
+    payload: ExportQueryResultSqlTextRequest,
+  ): Promise<ExportSqlTextResponse> {
+    return {
+      content: `-- mock query export\n-- scope: ${payload.scope}\n`,
+      row_count: payload.rows.length,
+      scope: payload.scope,
     }
   },
 

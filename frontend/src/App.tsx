@@ -1,10 +1,11 @@
 import {
+  Suspense,
+  lazy,
   useEffect,
   useRef,
   useState,
   type RefObject,
   type ReactNode,
-  type UIEventHandler,
 } from 'react'
 import './App.css'
 import {
@@ -12,6 +13,7 @@ import {
   applyTableDataChanges,
   applyTableDesignChanges,
   cancelDataCompareTask,
+  chooseExportPath,
   chooseSqlExportPath,
   compareDiscoverTables,
   createDataSourceGroup,
@@ -22,14 +24,18 @@ import {
   disconnectConnectionProfile,
   executeSql,
   exportDataCompareSqlFile,
+  exportQueryResultFile,
+  exportQueryResultSqlText,
   exportStructureCompareSqlFile,
+  exportTableDataFile,
+  exportTableDataSqlText,
+  getAppBootstrap,
   getDataCompareTaskProgress,
   getDataCompareTaskResult,
-  getAppBootstrap,
   getTableDdl,
   importNavicatConnectionProfiles,
-  listDatabaseTables,
   listCompareHistory,
+  listDatabaseTables,
   listProfileDatabases,
   loadDataCompareDetailPage,
   loadSqlAutocomplete,
@@ -45,38 +51,59 @@ import {
   startDataCompareTask,
   testConnectionProfile,
 } from './api'
-import { SqlDiffViewer, SqlEditor } from './SqlEditor'
+import {
+  getDataCompareActionTotalCount,
+  buildDataCompareResultTableKey,
+  buildDataCompareTableSelections,
+  buildPrunedDataCompareDetailPages,
+  buildStructureCompareDetailKey,
+  buildStructureSqlSelection,
+  createDataCompareSelectionState,
+  createEmptyDataCompareDetailState,
+  createEmptyDataCompareSelectionItem,
+  createStructureSelectionState,
+  getStructureItemsByCategory,
+  pickFirstStructureCategory,
+  toggleExcludedSignature,
+} from './features/compare/state'
+import type {
+  CompareFormState,
+  CompareWorkflowStep,
+  DataCompareSelectionItem,
+  DataCompareState,
+  StructureCompareState,
+} from './features/compare/types'
+import {
+  buildChangedDataValues,
+  buildDataMutationPayload,
+  createGridRow,
+} from './features/table-data/dataMutations'
+import type { ConsoleTab, DataGridRow, DataTab } from './features/workspace/types'
+import { EmptyNotice } from './shared/components/EmptyNotice'
 import type {
   AppBootstrap,
-  ApplyTableDataChangesPayload,
   CellValue,
-  CompareDetailPageResponse,
   CompareDetailType,
+  ExecuteSqlPayload,
+  ExportFileFormat,
+  ExportScope,
   CompareHistoryInput,
   CompareHistoryItem,
-  CompareHistoryPerformance,
   CompareHistoryType,
-  CompareTableDiscoveryResponse,
-  CompareTaskPhase,
-  CompareTaskProgressResponse,
   ConnectionProfile,
-  DataSourceGroup,
-  DataCompareRequest,
-  DataCompareResponse,
   CreateDatabasePayload,
   DatabaseEntry,
+  DataCompareRequest,
+  DataCompareResponse,
+  DataSourceGroup,
   JsonRecord,
+  LoadTableDataPayload,
   SaveConnectionProfilePayload,
   SqlAutocompleteSchema,
-  StructureCompareDetailResponse,
   StructureCompareRequest,
   StructureCompareResponse,
-  StructureSqlSelection,
-  TableSqlSelection,
   StructureDetailCategory,
-  StructureTableItem,
   TableColumn,
-  TableCompareResult,
   TableDataColumn,
   TableDataRow,
   TableEntry,
@@ -102,15 +129,6 @@ type DesignDraftColumn = TableColumn & {
   origin_name: string | null
 }
 
-type DataGridRow = {
-  client_id: string
-  selected: boolean
-  state: 'clean' | 'new' | 'updated' | 'deleted'
-  row_key: JsonRecord | null
-  original_values: JsonRecord
-  values: JsonRecord
-}
-
 type ProfileEditorState = {
   mode: 'create' | 'edit'
   saving: boolean
@@ -134,40 +152,6 @@ type DesignTabState = {
   draft_columns: DesignDraftColumn[]
 }
 
-type DataTabState = {
-  loading: boolean
-  error: string
-  columns: TableDataColumn[]
-  rows: DataGridRow[]
-  primary_keys: string[]
-  where_clause: string
-  order_by_clause: string
-  offset: number
-  limit: number
-  total_rows: number
-  row_count_exact: boolean
-  editable: boolean
-  transaction_mode: 'auto' | 'manual'
-}
-
-type ConsoleTabState = {
-  loading: boolean
-  error: string
-  sql: string
-  message: string
-  executed_sql: string
-  result_kind: 'idle' | 'query' | 'mutation'
-  columns: TableDataColumn[]
-  rows: DataGridRow[]
-  offset: number
-  limit: number
-  total_rows: number
-  row_count_exact: boolean
-  affected_rows: number
-  truncated: boolean
-  database_loading: boolean
-}
-
 type ProfileTab = {
   id: string
   kind: 'profile'
@@ -189,32 +173,6 @@ type DesignTab = {
   database_name: string
   table_name: string
   design: DesignTabState
-}
-
-type DataTab = {
-  id: string
-  kind: 'data'
-  title: string
-  subtitle: string
-  status: 'loading' | 'ready' | 'error'
-  error: string
-  profile_id: string
-  database_name: string
-  table_name: string
-  data: DataTabState
-}
-
-type ConsoleTab = {
-  id: string
-  kind: 'console'
-  title: string
-  subtitle: string
-  status: 'loading' | 'ready' | 'error'
-  error: string
-  profile_id: string
-  database_name: string | null
-  table_name: string | null
-  console: ConsoleTabState
 }
 
 type WorkspaceTab = ProfileTab | DesignTab | DataTab | ConsoleTab
@@ -259,6 +217,32 @@ type ConfirmDialogState = {
   busy: boolean
   on_confirm: () => Promise<void>
 }
+
+type ExportDialogState =
+  | {
+      kind: 'table_data'
+      title: string
+      subtitle: string
+      busy: boolean
+      format: ExportFileFormat
+      scope: ExportScope
+      columns: TableDataColumn[]
+      rows: TableDataRow[]
+      selected_rows: TableDataRow[]
+      load_payload: LoadTableDataPayload
+    }
+  | {
+      kind: 'query_result'
+      title: string
+      subtitle: string
+      busy: boolean
+      format: ExportFileFormat
+      scope: ExportScope
+      columns: TableDataColumn[]
+      rows: TableDataRow[]
+      selected_rows: TableDataRow[]
+      execute_payload: ExecuteSqlPayload
+    }
 
 type OutputLogEntry = {
   id: string
@@ -313,78 +297,12 @@ function createProfileEditorState(
 
 type RailSection = 'datasource' | 'structure_compare' | 'data_compare' | 'compare_history'
 
-type CompareFormState = {
-  source_profile_id: string
-  source_database_name: string
-  target_profile_id: string
-  target_database_name: string
-}
-
-type CompareWorkflowStep = 1 | 2 | 3
-
-type DataCompareSelectionItem = {
-  table_enabled: boolean
-  insert_enabled: boolean
-  update_enabled: boolean
-  delete_enabled: boolean
-  excluded_insert_signatures: string[]
-  excluded_update_signatures: string[]
-  excluded_delete_signatures: string[]
-}
-
-type DataCompareDetailState = {
-  row_columns: string[]
-  row_items: CompareDetailPageResponse['row_items']
-  update_items: CompareDetailPageResponse['update_items']
-  total: number
-  fetched: number
-  has_more: boolean
-  loading: boolean
-  loaded: boolean
-  error: string
-}
-
-type DataCompareState = {
-  current_step: CompareWorkflowStep
-  discovery: CompareTableDiscoveryResponse | null
-  selected_tables: string[]
-  loading_tables: boolean
-  running: boolean
-  task_progress: CompareTaskProgressResponse | null
-  result: DataCompareResponse | null
-  current_request: DataCompareRequest | null
-  table_filter: string
-  selection_by_table: Record<string, DataCompareSelectionItem>
-  active_table_key: string
-  active_detail_type: CompareDetailType
-  detail_pages: Record<string, Record<CompareDetailType, DataCompareDetailState>>
-}
-
-type StructureCompareDetailCacheItem = {
-  loading: boolean
-  error: string
-  detail: StructureCompareDetailResponse | null
-}
-
-type StructureCompareState = {
-  current_step: CompareWorkflowStep
-  loading: boolean
-  result: StructureCompareResponse | null
-  current_request: StructureCompareRequest | null
-  selection_by_category: Record<StructureDetailCategory, string[]>
-  active_category: StructureDetailCategory
-  expanded_detail_keys: string[]
-  detail_cache: Record<string, StructureCompareDetailCacheItem>
-}
-
 const defaultCompareForm: CompareFormState = {
   source_profile_id: '',
   source_database_name: '',
   target_profile_id: '',
   target_database_name: '',
 }
-
-const dataCompareDetailCacheLimit = 300
 
 const defaultDataCompareState: DataCompareState = {
   current_step: 1,
@@ -416,6 +334,36 @@ const defaultStructureCompareState: StructureCompareState = {
   expanded_detail_keys: [],
   detail_cache: {},
 }
+
+const DataEditorView = lazy(() =>
+  import('./features/table-data/DataEditorView').then((module) => ({
+    default: module.DataEditorView,
+  })),
+)
+
+const ConsoleView = lazy(() =>
+  import('./features/sql-console/ConsoleView').then((module) => ({
+    default: module.ConsoleView,
+  })),
+)
+
+const DataCompareWorkspace = lazy(() =>
+  import('./features/compare/DataCompareWorkspace').then((module) => ({
+    default: module.DataCompareWorkspace,
+  })),
+)
+
+const StructureCompareWorkspace = lazy(() =>
+  import('./features/compare/StructureCompareWorkspace').then((module) => ({
+    default: module.StructureCompareWorkspace,
+  })),
+)
+
+const CompareHistoryWorkspace = lazy(() =>
+  import('./features/compare/CompareHistoryWorkspace').then((module) => ({
+    default: module.CompareHistoryWorkspace,
+  })),
+)
 
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
@@ -461,6 +409,7 @@ function App() {
   const [createDatabaseDialog, setCreateDatabaseDialog] =
     useState<CreateDatabaseDialogState | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
+  const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null)
   const [outputVisible, setOutputVisible] = useState(false)
   const [outputLogs, setOutputLogs] = useState<OutputLogEntry[]>([])
   const [toasts, setToasts] = useState<ToastItem[]>([])
@@ -2334,6 +2283,239 @@ function App() {
     }
   }
 
+  function buildExportRows(rows: DataGridRow[], options?: { selected_only?: boolean }) {
+    return rows
+      .filter((row) => {
+        if (row.state === 'deleted') {
+          return false
+        }
+        return options?.selected_only ? row.selected : true
+      })
+      .map<TableDataRow>((row) => ({
+        row_key: row.row_key ? { ...row.row_key } : null,
+        values: { ...row.values },
+      }))
+  }
+
+  function openDataExportDialog(tab: DataTab) {
+    const rows = buildExportRows(tab.data.rows)
+    const selectedRows = buildExportRows(tab.data.rows, { selected_only: true })
+
+    setExportDialog({
+      kind: 'table_data',
+      title: '导出表数据',
+      subtitle: `${tab.database_name}.${tab.table_name}`,
+      busy: false,
+      format: 'csv',
+      scope:
+        selectedRows.length > 0 ? 'selected_rows' : rows.length > 0 ? 'current_page' : 'all_rows',
+      columns: tab.data.columns.map((column) => ({ ...column })),
+      rows,
+      selected_rows: selectedRows,
+      load_payload: {
+        profile_id: tab.profile_id,
+        database_name: tab.database_name,
+        table_name: tab.table_name,
+        where_clause: tab.data.where_clause,
+        order_by_clause: tab.data.order_by_clause,
+        offset: tab.data.offset,
+        limit: tab.data.limit,
+      },
+    })
+  }
+
+  function openTableExportDialog(
+    profileId: string,
+    databaseName: string,
+    tableName: string,
+  ) {
+    const currentTab = tabs.find(
+      (tab) =>
+        tab.kind === 'data' &&
+        tab.profile_id === profileId &&
+        tab.database_name === databaseName &&
+        tab.table_name === tableName,
+    )
+
+    if (currentTab?.kind === 'data') {
+      openDataExportDialog(currentTab)
+      return
+    }
+
+    setExportDialog({
+      kind: 'table_data',
+      title: '导出表数据',
+      subtitle: `${databaseName}.${tableName}`,
+      busy: false,
+      format: 'csv',
+      scope: 'all_rows',
+      columns: [],
+      rows: [],
+      selected_rows: [],
+      load_payload: {
+        profile_id: profileId,
+        database_name: databaseName,
+        table_name: tableName,
+        where_clause: '',
+        order_by_clause: '',
+      },
+    })
+  }
+
+  function openQueryResultExportDialog(tab: ConsoleTab) {
+    if (tab.console.columns.length === 0) {
+      pushToast('当前没有可导出的查询结果', 'info')
+      return
+    }
+
+    const executedSql = (tab.console.executed_sql || tab.console.sql).trim()
+    if (!executedSql) {
+      pushToast('请先执行查询后再导出结果', 'info')
+      return
+    }
+
+    const rows = buildExportRows(tab.console.rows)
+    const selectedRows = buildExportRows(tab.console.rows, { selected_only: true })
+
+    setExportDialog({
+      kind: 'query_result',
+      title: '导出查询结果',
+      subtitle: tab.subtitle,
+      busy: false,
+      format: 'csv',
+      scope: selectedRows.length > 0 ? 'selected_rows' : 'current_page',
+      columns: tab.console.columns.map((column) => ({ ...column })),
+      rows,
+      selected_rows: selectedRows,
+      execute_payload: {
+        profile_id: tab.profile_id,
+        database_name: tab.database_name,
+        sql: executedSql,
+        offset: tab.console.offset,
+        limit: tab.console.limit,
+      },
+    })
+  }
+
+  function updateExportDialogScope(scope: ExportScope) {
+    setExportDialog((previous) => (previous ? { ...previous, scope } : previous))
+  }
+
+  function updateExportDialogFormat(format: ExportFileFormat) {
+    setExportDialog((previous) => (previous ? { ...previous, format } : previous))
+  }
+
+  async function confirmExportDialog() {
+    if (!exportDialog) {
+      return
+    }
+
+    setExportDialog((previous) => (previous ? { ...previous, busy: true } : previous))
+
+    try {
+      const saveTarget = await chooseExportPath({
+        default_file_name:
+          exportDialog.kind === 'table_data'
+            ? buildTableDataExportFileName(
+                exportDialog.load_payload.database_name,
+                exportDialog.load_payload.table_name,
+                exportDialog.format,
+              )
+            : buildQueryResultExportFileName(
+                exportDialog.execute_payload.database_name ?? null,
+                exportDialog.format,
+              ),
+        filters: [
+          {
+            name: exportDialog.format.toUpperCase(),
+            extensions: [exportDialog.format],
+          },
+        ],
+      })
+
+      if (saveTarget.canceled || !saveTarget.file_path) {
+        setExportDialog((previous) => (previous ? { ...previous, busy: false } : previous))
+        return
+      }
+
+      const rows =
+        exportDialog.scope === 'selected_rows' ? exportDialog.selected_rows : exportDialog.rows
+
+      const result =
+        exportDialog.kind === 'table_data'
+          ? await exportTableDataFile({
+              load_payload: exportDialog.load_payload,
+              file_path: saveTarget.file_path,
+              export_format: exportDialog.format,
+              scope: exportDialog.scope,
+              columns: exportDialog.columns,
+              rows,
+            })
+          : await exportQueryResultFile({
+              execute_payload: exportDialog.execute_payload,
+              file_path: saveTarget.file_path,
+              export_format: exportDialog.format,
+              scope: exportDialog.scope,
+              columns: exportDialog.columns,
+              rows,
+            })
+
+      const scopeLabel = getExportScopeText(exportDialog)
+      pushToast(`${exportDialog.title}已完成`, 'success')
+      appendOutputLog(
+        exportDialog.title,
+        `已导出 ${result.row_count} 行到 ${result.file_path}（${result.export_format.toUpperCase()}，${scopeLabel}）`,
+        'success',
+      )
+      setExportDialog(null)
+    } catch (error) {
+      setExportDialog((previous) => (previous ? { ...previous, busy: false } : previous))
+      pushToast(error instanceof Error ? error.message : '导出失败', 'error')
+    }
+  }
+
+  async function copyExportDialogSql() {
+    if (!exportDialog || exportDialog.format !== 'sql') {
+      return
+    }
+
+    setExportDialog((previous) => (previous ? { ...previous, busy: true } : previous))
+
+    try {
+      const rows =
+        exportDialog.scope === 'selected_rows' ? exportDialog.selected_rows : exportDialog.rows
+
+      const result =
+        exportDialog.kind === 'table_data'
+          ? await exportTableDataSqlText({
+              load_payload: exportDialog.load_payload,
+              scope: exportDialog.scope,
+              columns: exportDialog.columns,
+              rows,
+            })
+          : await exportQueryResultSqlText({
+              execute_payload: exportDialog.execute_payload,
+              scope: exportDialog.scope,
+              columns: exportDialog.columns,
+              rows,
+            })
+
+      await copyTextToClipboard(result.content)
+
+      const scopeLabel = getExportScopeText(exportDialog)
+      pushToast('SQL 已复制到剪贴板', 'success')
+      appendOutputLog(
+        exportDialog.title,
+        `已复制 ${result.row_count} 行对应的 SQL 到剪贴板（${scopeLabel}）`,
+        'success',
+      )
+      setExportDialog(null)
+    } catch (error) {
+      setExportDialog((previous) => (previous ? { ...previous, busy: false } : previous))
+      pushToast(error instanceof Error ? error.message : '复制 SQL 失败', 'error')
+    }
+  }
+
   function updateDesignRow(
     tabId: string,
     clientId: string,
@@ -2731,6 +2913,41 @@ function App() {
         data: {
           ...tab.data,
           rows: tab.data.rows.map((row, index) => {
+            if (index >= rangeStart && index <= rangeEnd) {
+              return { ...row, selected: true }
+            }
+
+            return options?.append ? row : { ...row, selected: false }
+          }),
+        },
+      }
+    })
+  }
+
+  function selectConsoleRowsRange(
+    tabId: string,
+    startClientId: string,
+    endClientId: string,
+    options?: { append?: boolean },
+  ) {
+    patchTab(tabId, (tab) => {
+      if (tab.kind !== 'console') {
+        return tab
+      }
+
+      const startIndex = tab.console.rows.findIndex((row) => row.client_id === startClientId)
+      const endIndex = tab.console.rows.findIndex((row) => row.client_id === endClientId)
+      if (startIndex === -1 || endIndex === -1) {
+        return tab
+      }
+
+      const rangeStart = Math.min(startIndex, endIndex)
+      const rangeEnd = Math.max(startIndex, endIndex)
+      return {
+        ...tab,
+        console: {
+          ...tab.console,
+          rows: tab.console.rows.map((row, index) => {
             if (index >= rangeStart && index <= rangeEnd) {
               return { ...row, selected: true }
             }
@@ -3846,68 +4063,91 @@ function App() {
               ) : null}
 
               {activeTab?.kind === 'data' ? (
-                <DataEditorView
-                  tab={activeTab}
-                  onRefresh={() =>
-                    void refreshDataTab(
-                      activeTab.id,
-                      activeTab.profile_id,
-                      activeTab.database_name,
-                      activeTab.table_name,
-                      activeTab.data.where_clause,
-                      activeTab.data.order_by_clause,
-                      activeTab.data.offset,
-                      activeTab.data.limit,
-                    )
+                <Suspense
+                  fallback={
+                    <WorkspaceLoadingState
+                      title="正在加载数据表工作区"
+                      text="正在初始化表数据编辑器。"
+                    />
                   }
-                  onAddRow={() => addDataRow(activeTab.id)}
-                  onDeleteRows={() => deleteSelectedDataRows(activeTab.id)}
-                  onRestoreRows={() => restoreSelectedDataRows(activeTab.id)}
-                  onCommit={() => void commitDataChanges(activeTab)}
-                  onApplyFilter={() =>
-                    void refreshDataTab(
-                      activeTab.id,
-                      activeTab.profile_id,
-                      activeTab.database_name,
-                      activeTab.table_name,
-                      activeTab.data.where_clause,
-                      activeTab.data.order_by_clause,
-                      0,
-                      activeTab.data.limit,
-                    )
-                  }
-                  onFirstPage={() => void changeDataPage(activeTab, 'first')}
-                  onPrevPage={() => void changeDataPage(activeTab, 'prev')}
-                  onNextPage={() => void changeDataPage(activeTab, 'next')}
-                  onLastPage={() => void changeDataPage(activeTab, 'last')}
-                  onQueryFieldChange={updateDataQueryField}
-                  onSelectRowsRange={(startClientId, endClientId, options) =>
-                    selectDataRowsRange(activeTab.id, startClientId, endClientId, options)
-                  }
-                  onValueChange={updateDataRow}
-                />
+                >
+                  <DataEditorView
+                    tab={activeTab}
+                    onRefresh={() =>
+                      void refreshDataTab(
+                        activeTab.id,
+                        activeTab.profile_id,
+                        activeTab.database_name,
+                        activeTab.table_name,
+                        activeTab.data.where_clause,
+                        activeTab.data.order_by_clause,
+                        activeTab.data.offset,
+                        activeTab.data.limit,
+                      )
+                    }
+                    onAddRow={() => addDataRow(activeTab.id)}
+                    onDeleteRows={() => deleteSelectedDataRows(activeTab.id)}
+                    onRestoreRows={() => restoreSelectedDataRows(activeTab.id)}
+                    onCommit={() => void commitDataChanges(activeTab)}
+                    onExport={() => openDataExportDialog(activeTab)}
+                    onApplyFilter={() =>
+                      void refreshDataTab(
+                        activeTab.id,
+                        activeTab.profile_id,
+                        activeTab.database_name,
+                        activeTab.table_name,
+                        activeTab.data.where_clause,
+                        activeTab.data.order_by_clause,
+                        0,
+                        activeTab.data.limit,
+                      )
+                    }
+                    onFirstPage={() => void changeDataPage(activeTab, 'first')}
+                    onPrevPage={() => void changeDataPage(activeTab, 'prev')}
+                    onNextPage={() => void changeDataPage(activeTab, 'next')}
+                    onLastPage={() => void changeDataPage(activeTab, 'last')}
+                    onQueryFieldChange={updateDataQueryField}
+                    onSelectRowsRange={(startClientId, endClientId, options) =>
+                      selectDataRowsRange(activeTab.id, startClientId, endClientId, options)
+                    }
+                    onValueChange={updateDataRow}
+                  />
+                </Suspense>
               ) : null}
 
               {activeTab?.kind === 'console' ? (
-                <ConsoleView
-                  tab={activeTab}
-                  databaseOptions={databasesByProfile[activeTab.profile_id] ?? []}
-                  schemaTables={activeConsoleAutocomplete?.tables ?? []}
-                  schemaCatalog={activeConsoleSchemas}
-                  onResolveSchema={(databaseName) =>
-                    ensureSqlAutocompleteLoaded(activeTab.profile_id, databaseName, {
-                      silent: true,
-                    })
+                <Suspense
+                  fallback={
+                    <WorkspaceLoadingState
+                      title="正在加载 SQL 控制台"
+                      text="正在准备编辑器和结果面板。"
+                    />
                   }
-                  onDatabaseChange={updateConsoleDatabase}
-                  onFormat={formatConsoleSql}
-                  onSqlChange={updateConsoleSql}
-                  onExecute={() => void runConsoleSql(activeTab, 0)}
-                  onFirstPage={() => void changeConsolePage(activeTab, 'first')}
-                  onPrevPage={() => void changeConsolePage(activeTab, 'prev')}
-                  onNextPage={() => void changeConsolePage(activeTab, 'next')}
-                  onLastPage={() => void changeConsolePage(activeTab, 'last')}
-                />
+                >
+                  <ConsoleView
+                    tab={activeTab}
+                    databaseOptions={databasesByProfile[activeTab.profile_id] ?? []}
+                    schemaTables={activeConsoleAutocomplete?.tables ?? []}
+                    schemaCatalog={activeConsoleSchemas}
+                    onResolveSchema={(databaseName) =>
+                      ensureSqlAutocompleteLoaded(activeTab.profile_id, databaseName, {
+                        silent: true,
+                      })
+                    }
+                    onDatabaseChange={updateConsoleDatabase}
+                    onFormat={formatConsoleSql}
+                    onSqlChange={updateConsoleSql}
+                    onExecute={() => void runConsoleSql(activeTab, 0)}
+                    onExport={() => openQueryResultExportDialog(activeTab)}
+                    onFirstPage={() => void changeConsolePage(activeTab, 'first')}
+                    onPrevPage={() => void changeConsolePage(activeTab, 'prev')}
+                    onNextPage={() => void changeConsolePage(activeTab, 'next')}
+                    onLastPage={() => void changeConsolePage(activeTab, 'last')}
+                    onSelectRowsRange={(startClientId, endClientId, options) =>
+                      selectConsoleRowsRange(activeTab.id, startClientId, endClientId, options)
+                    }
+                  />
+                </Suspense>
               ) : null}
 
               {!activeTab ? <EmptyWorkspace /> : null}
@@ -3922,86 +4162,113 @@ function App() {
             ) : null}
             </>
             ) : activeSection === 'data_compare' ? (
-              <DataCompareWorkspace
-                state={dataCompareState}
-                compareForm={compareForm}
-                profiles={profiles}
-                compareHistoryItems={compareHistoryItems}
-                databasesByProfile={databasesByProfile}
-                nodeLoading={nodeLoading}
-                profileConnectionState={profileConnectionState}
-                filteredTables={filteredDataCompareTables}
-                onSourceProfileChange={(value) => void updateCompareProfile('source', value)}
-                onSourceDatabaseChange={(value) => updateCompareDatabase('source', value)}
-                onTargetProfileChange={(value) => void updateCompareProfile('target', value)}
-                onTargetDatabaseChange={(value) => updateCompareDatabase('target', value)}
-                onDiscover={() => void discoverCompareTables()}
-                onBackToSourceStep={() => setDataCompareStep(1)}
-                onTableFilterChange={updateDataCompareTableFilter}
-                onTableToggle={toggleDataCompareTable}
-                onSelectAllTables={selectAllDataCompareTables}
-                onClearAllTables={clearAllDataCompareTables}
-                onRunCompare={() => void runDataCompareFlow()}
-                onExportSql={() => void exportSelectedDataCompareSql()}
-                onCancelCompare={() => void cancelRunningDataCompare()}
-                onResultTablePick={selectDataCompareResultTable}
-                onDetailTypeChange={switchDataCompareDetailType}
-                onResultTableToggle={toggleDataCompareResultTableSelection}
-                onResultActionToggle={toggleDataCompareResultActionSelection}
-                onDetailToggle={toggleDataCompareDetailSelection}
-                onLoadMoreDetail={() =>
-                  void ensureDataCompareDetailLoaded(
-                    dataCompareState.active_table_key,
-                    dataCompareState.active_detail_type,
-                    dataCompareState.current_request,
-                    false,
-                  )
+              <Suspense
+                fallback={
+                  <WorkspaceLoadingState
+                    title="正在加载数据对比"
+                    text="正在准备对比流程与结果面板。"
+                  />
                 }
-              />
+              >
+                <DataCompareWorkspace
+                  state={dataCompareState}
+                  compareForm={compareForm}
+                  profiles={profiles}
+                  compareHistoryItems={compareHistoryItems}
+                  databasesByProfile={databasesByProfile}
+                  nodeLoading={nodeLoading}
+                  profileConnectionState={profileConnectionState}
+                  filteredTables={filteredDataCompareTables}
+                  onSourceProfileChange={(value) => void updateCompareProfile('source', value)}
+                  onSourceDatabaseChange={(value) => updateCompareDatabase('source', value)}
+                  onTargetProfileChange={(value) => void updateCompareProfile('target', value)}
+                  onTargetDatabaseChange={(value) => updateCompareDatabase('target', value)}
+                  onDiscover={() => void discoverCompareTables()}
+                  onBackToSourceStep={() => setDataCompareStep(1)}
+                  onTableFilterChange={updateDataCompareTableFilter}
+                  onTableToggle={toggleDataCompareTable}
+                  onSelectAllTables={selectAllDataCompareTables}
+                  onClearAllTables={clearAllDataCompareTables}
+                  onRunCompare={() => void runDataCompareFlow()}
+                  onExportSql={() => void exportSelectedDataCompareSql()}
+                  onCancelCompare={() => void cancelRunningDataCompare()}
+                  onResultTablePick={selectDataCompareResultTable}
+                  onDetailTypeChange={switchDataCompareDetailType}
+                  onResultTableToggle={toggleDataCompareResultTableSelection}
+                  onResultActionToggle={toggleDataCompareResultActionSelection}
+                  onDetailToggle={toggleDataCompareDetailSelection}
+                  onLoadMoreDetail={() =>
+                    void ensureDataCompareDetailLoaded(
+                      dataCompareState.active_table_key,
+                      dataCompareState.active_detail_type,
+                      dataCompareState.current_request,
+                      false,
+                    )
+                  }
+                />
+              </Suspense>
             ) : activeSection === 'structure_compare' ? (
-              <StructureCompareWorkspace
-                state={structureCompareState}
-                compareForm={compareForm}
-                profiles={profiles}
-                compareHistoryItems={compareHistoryItems}
-                databasesByProfile={databasesByProfile}
-                nodeLoading={nodeLoading}
-                profileConnectionState={profileConnectionState}
-                onSourceProfileChange={(value) => void updateCompareProfile('source', value)}
-                onSourceDatabaseChange={(value) => updateCompareDatabase('source', value)}
-                onTargetProfileChange={(value) => void updateCompareProfile('target', value)}
-                onTargetDatabaseChange={(value) => updateCompareDatabase('target', value)}
-                onRunCompare={() => void runStructureCompareFlow()}
-                onBackToSourceStep={() => setStructureCompareStep(1)}
-                onGoToSummaryStep={() => setStructureCompareStep(3)}
-                onBackToDiffStep={() => setStructureCompareStep(2)}
-                detailConcurrencyInput={structureDetailConcurrencyInput}
-                onDetailConcurrencyInputChange={setStructureDetailConcurrencyInput}
-                onExportSql={() => void exportSelectedStructureCompareSql()}
-                onCategoryChange={(category) =>
-                  setStructureCompareState((previous) => ({
-                    ...previous,
-                    active_category: category,
-                  }))
+              <Suspense
+                fallback={
+                  <WorkspaceLoadingState
+                    title="正在加载结构对比"
+                    text="正在准备结构差异筛选与详情面板。"
+                  />
                 }
-                onCategoryToggle={toggleStructureCategorySelection}
-                onTableToggle={toggleStructureTableSelection}
-                onDetailToggle={(category, tableName, forceReload) =>
-                  void toggleStructureDetail(
-                    category,
-                    tableName,
-                    structureCompareState.current_request,
-                    forceReload,
-                  )
-                }
-              />
+              >
+                <StructureCompareWorkspace
+                  state={structureCompareState}
+                  compareForm={compareForm}
+                  profiles={profiles}
+                  compareHistoryItems={compareHistoryItems}
+                  databasesByProfile={databasesByProfile}
+                  nodeLoading={nodeLoading}
+                  profileConnectionState={profileConnectionState}
+                  onSourceProfileChange={(value) => void updateCompareProfile('source', value)}
+                  onSourceDatabaseChange={(value) => updateCompareDatabase('source', value)}
+                  onTargetProfileChange={(value) => void updateCompareProfile('target', value)}
+                  onTargetDatabaseChange={(value) => updateCompareDatabase('target', value)}
+                  onRunCompare={() => void runStructureCompareFlow()}
+                  onBackToSourceStep={() => setStructureCompareStep(1)}
+                  onGoToSummaryStep={() => setStructureCompareStep(3)}
+                  onBackToDiffStep={() => setStructureCompareStep(2)}
+                  detailConcurrencyInput={structureDetailConcurrencyInput}
+                  onDetailConcurrencyInputChange={setStructureDetailConcurrencyInput}
+                  onExportSql={() => void exportSelectedStructureCompareSql()}
+                  onCategoryChange={(category) =>
+                    setStructureCompareState((previous) => ({
+                      ...previous,
+                      active_category: category,
+                    }))
+                  }
+                  onCategoryToggle={toggleStructureCategorySelection}
+                  onTableToggle={toggleStructureTableSelection}
+                  onDetailToggle={(category, tableName, forceReload) =>
+                    void toggleStructureDetail(
+                      category,
+                      tableName,
+                      structureCompareState.current_request,
+                      forceReload,
+                    )
+                  }
+                />
+              </Suspense>
             ) : (
-              <CompareHistoryWorkspace
-                historyItems={visibleHistoryItems}
-                selectedHistoryItem={selectedHistoryItem}
-                historyType={compareHistoryType}
-                onSelect={(historyId) => setSelectedHistoryId(historyId)}
-              />
+              <Suspense
+                fallback={
+                  <WorkspaceLoadingState
+                    title="正在加载对比记录"
+                    text="正在读取记录视图。"
+                  />
+                }
+              >
+                <CompareHistoryWorkspace
+                  historyItems={visibleHistoryItems}
+                  selectedHistoryItem={selectedHistoryItem}
+                  historyType={compareHistoryType}
+                  onSelect={(historyId) => setSelectedHistoryId(historyId)}
+                />
+              </Suspense>
             )}
           </section>
         </div>
@@ -4055,6 +4322,100 @@ function App() {
           }
         >
           <pre className="code-block">{sqlPreview.statements.join('\n\n')}</pre>
+        </Modal>
+      ) : null}
+
+      {exportDialog ? (
+        <Modal
+          title={exportDialog.title}
+          subtitle={exportDialog.subtitle}
+          onClose={() => {
+            if (!exportDialog.busy) {
+              setExportDialog(null)
+            }
+          }}
+          actions={
+            <>
+              <button
+                className="flat-button"
+                disabled={exportDialog.busy}
+                type="button"
+                onClick={() => setExportDialog(null)}
+              >
+                取消
+              </button>
+              {exportDialog.format === 'sql' ? (
+                <button
+                  className="flat-button"
+                  disabled={exportDialog.busy}
+                  type="button"
+                  onClick={() => void copyExportDialogSql()}
+                >
+                  {exportDialog.busy ? '处理中...' : '复制到剪贴板'}
+                </button>
+              ) : null}
+              <button
+                className="flat-button primary"
+                disabled={exportDialog.busy}
+                type="button"
+                onClick={() => void confirmExportDialog()}
+              >
+                {exportDialog.busy ? '处理中...' : '下载文件'}
+              </button>
+            </>
+          }
+        >
+          <div className="form-card compact-form-card export-dialog-card">
+            <label className="form-item">
+              <span>导出格式</span>
+              <select
+                value={exportDialog.format}
+                disabled={exportDialog.busy}
+                onChange={(event) =>
+                  updateExportDialogFormat(event.target.value as ExportFileFormat)
+                }
+              >
+                <option value="csv">CSV</option>
+                <option value="sql">SQL</option>
+                {exportDialog.kind === 'query_result' ? (
+                  <option value="json">JSON</option>
+                ) : null}
+              </select>
+            </label>
+
+            <div className="form-item">
+              <span>导出范围</span>
+              <div className="export-scope-list">
+                {getExportScopeOptions(exportDialog).map((option) => (
+                  <label
+                    className={`export-scope-item ${option.disabled ? 'disabled' : ''}`}
+                    key={option.value}
+                  >
+                    <input
+                      checked={exportDialog.scope === option.value}
+                      disabled={exportDialog.busy || option.disabled}
+                      name="export_scope"
+                      type="radio"
+                      value={option.value}
+                      onChange={() => updateExportDialogScope(option.value)}
+                    />
+                    <div className="export-scope-copy">
+                      <strong>{option.label}</strong>
+                      <p>{option.description}</p>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            </div>
+
+            <div className="status-panel export-summary">
+              当前将以 {exportDialog.format.toUpperCase()} 格式导出
+              {getExportScopeText(exportDialog)}。
+              {exportDialog.format === 'sql'
+                ? ' 可直接下载文件，也可复制到剪贴板。'
+                : null}
+            </div>
+          </div>
         </Modal>
       ) : null}
 
@@ -4235,7 +4596,11 @@ function App() {
                 className="context-menu-item"
                 type="button"
                 onClick={() => {
-                  pushToast('该功能暂未开发', 'info')
+                  openTableExportDialog(
+                    treeContextMenu.profile_id,
+                    treeContextMenu.database_name,
+                    treeContextMenu.table_name,
+                  )
                   setTreeContextMenu(null)
                 }}
               >
@@ -4784,519 +5149,6 @@ function DesignEditorView({
   )
 }
 
-function DataEditorView({
-  tab,
-  onRefresh,
-  onAddRow,
-  onDeleteRows,
-  onRestoreRows,
-  onCommit,
-  onApplyFilter,
-  onFirstPage,
-  onPrevPage,
-  onNextPage,
-  onLastPage,
-  onQueryFieldChange,
-  onSelectRowsRange,
-  onValueChange,
-}: {
-  tab: DataTab
-  onRefresh: () => void
-  onAddRow: () => void
-  onDeleteRows: () => void
-  onRestoreRows: () => void
-  onCommit: () => void
-  onApplyFilter: () => void
-  onFirstPage: () => void
-  onPrevPage: () => void
-  onNextPage: () => void
-  onLastPage: () => void
-  onQueryFieldChange: (
-    tabId: string,
-    field: 'where_clause' | 'order_by_clause' | 'transaction_mode',
-    value: string,
-  ) => void
-  onSelectRowsRange: (
-    startClientId: string,
-    endClientId: string,
-    options?: { append?: boolean },
-  ) => void
-  onValueChange: (
-    tabId: string,
-    clientId: string,
-    columnName: string,
-    value: CellValue,
-  ) => void
-}) {
-  const rangeStart = tab.data.rows.length === 0 ? 0 : tab.data.offset + 1
-  const rangeEnd =
-    tab.data.rows.length === 0
-      ? 0
-      : Math.min(tab.data.offset + tab.data.rows.length, tab.data.total_rows)
-  const atFirstPage = tab.data.offset <= 0 || tab.data.total_rows === 0
-  const atLastPage = tab.data.row_count_exact
-    ? rangeEnd >= tab.data.total_rows
-    : tab.data.rows.length < tab.data.limit
-  const totalRowsLabel = formatTotalRowsLabel(tab.data.total_rows, tab.data.row_count_exact)
-  const hasPendingDataChanges = hasPendingDataMutations(tab)
-  const hasSelectedRowsForDelete = hasSelectedDataRowsForDelete(tab)
-  const hasSelectedRowsForRestore = hasRestorableSelectedDataRows(tab)
-
-  return (
-    <div className="editor-page data-editor-page">
-      <div className="data-control-stack">
-        <div className="data-toolbar-row">
-          <div className="editor-actions">
-            <button className="flat-button" type="button" onClick={onRefresh}>
-              刷新
-            </button>
-            <button
-              className="flat-button"
-              disabled={!tab.data.editable}
-              type="button"
-              onClick={onAddRow}
-            >
-              新增行
-            </button>
-            <button
-              className="flat-button"
-              disabled={!tab.data.editable || !hasSelectedRowsForDelete}
-              type="button"
-              onClick={onDeleteRows}
-            >
-              删除行
-            </button>
-            <button
-              className="flat-button"
-              disabled={!tab.data.editable || !hasSelectedRowsForRestore}
-              type="button"
-              onClick={onRestoreRows}
-            >
-              恢复所选
-            </button>
-            <button
-              className="flat-button primary"
-              disabled={!tab.data.editable || !hasPendingDataChanges}
-              type="button"
-              onClick={onCommit}
-            >
-              提交
-            </button>
-          </div>
-        </div>
-
-        <div className="inline-query-bar">
-          <label className="inline-query-field">
-            <span>WHERE</span>
-            <SqlEditor
-              editor_id={`${tab.id}:where`}
-              mode="where"
-              value={tab.data.where_clause}
-              placeholder=""
-              table_name={tab.table_name}
-              table_columns={tab.data.columns}
-              onChange={(value) => onQueryFieldChange(tab.id, 'where_clause', value)}
-            />
-          </label>
-
-          <label className="inline-query-field">
-            <span>ORDER BY</span>
-            <SqlEditor
-              editor_id={`${tab.id}:order_by`}
-              mode="order_by"
-              value={tab.data.order_by_clause}
-              placeholder=""
-              table_name={tab.table_name}
-              table_columns={tab.data.columns}
-              onChange={(value) => onQueryFieldChange(tab.id, 'order_by_clause', value)}
-            />
-          </label>
-
-          <button className="flat-button primary" type="button" onClick={onApplyFilter}>
-            应用条件
-          </button>
-        </div>
-      </div>
-
-      {!tab.data.editable ? (
-        <div className="status-panel warning">
-          当前表没有主键。为了避免误更新，本轮只提供只读浏览，不开放直接提交。
-        </div>
-      ) : null}
-
-      {tab.data.error ? <EmptyNotice title="读取表数据失败" text={tab.data.error} /> : null}
-
-      <div className="grid-shell data-grid-shell">
-        <DataGridTable
-          columns={tab.data.columns}
-          editable={tab.data.editable}
-          rows={tab.data.rows}
-          rowNumberOffset={tab.data.offset}
-          onSelectRowsRange={onSelectRowsRange}
-          onValueChange={(clientId, columnName, value) =>
-            onValueChange(tab.id, clientId, columnName, value)
-          }
-        />
-      </div>
-
-      <footer className="page-footer">
-        <span className="page-footer-meta">
-          已加载 {tab.data.rows.length} 行，{tab.data.row_count_exact ? '共' : '至少'}{' '}
-          {tab.data.total_rows} 行
-        </span>
-        <div className="page-footer-center">
-          <div className="pager-shell">
-            <button
-              className="pager-button"
-              disabled={tab.data.loading || atFirstPage}
-              type="button"
-              onClick={onFirstPage}
-            >
-              |&lt;
-            </button>
-            <button
-              className="pager-button"
-              disabled={tab.data.loading || atFirstPage}
-              type="button"
-              onClick={onPrevPage}
-            >
-              &lt;
-            </button>
-            <span className="pager-range">
-              {rangeStart}-{rangeEnd} / {totalRowsLabel}
-            </span>
-            <button
-              className="pager-button"
-              disabled={tab.data.loading || atLastPage}
-              type="button"
-              onClick={onNextPage}
-            >
-              &gt;
-            </button>
-            <button
-              className="pager-button"
-              disabled={tab.data.loading || !tab.data.row_count_exact || atLastPage}
-              type="button"
-              onClick={onLastPage}
-            >
-              &gt;|
-            </button>
-          </div>
-        </div>
-      </footer>
-    </div>
-  )
-}
-
-function DataGridTable({
-  columns,
-  rows,
-  editable,
-  rowNumberOffset,
-  onSelectRowsRange,
-  onValueChange,
-}: {
-  columns: TableDataColumn[]
-  rows: DataGridRow[]
-  editable: boolean
-  rowNumberOffset?: number
-  onSelectRowsRange?: (
-    startClientId: string,
-    endClientId: string,
-    options?: { append?: boolean },
-  ) => void
-  onValueChange?: (clientId: string, columnName: string, value: CellValue) => void
-}) {
-  const selectionAnchorRef = useRef<string | null>(null)
-  const dragSelectionRef = useRef<{
-    startClientId: string
-    append: boolean
-    lastClientId: string
-  } | null>(null)
-
-  useEffect(() => {
-    const handleMouseUp = () => {
-      if (dragSelectionRef.current) {
-        selectionAnchorRef.current = dragSelectionRef.current.lastClientId
-      }
-      dragSelectionRef.current = null
-    }
-
-    window.addEventListener('mouseup', handleMouseUp)
-    return () => window.removeEventListener('mouseup', handleMouseUp)
-  }, [])
-
-  return (
-    <div className="data-grid-viewport">
-      <table className="data-table">
-        <colgroup>
-          <col style={{ width: '56px' }} />
-          {columns.map((column) => (
-            <col key={`col-${column.name}`} style={{ width: '240px' }} />
-          ))}
-        </colgroup>
-        <thead>
-          <tr>
-            <th className="center-cell">#</th>
-            {columns.map((column) => (
-              <th key={column.name}>
-                <span className="column-title">
-                  {column.primary_key ? <strong>PK</strong> : null}
-                  {column.name}
-                </span>
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row, index) => (
-            <tr
-              className={`${row.selected ? 'selected' : ''} row-${row.state}`}
-              key={row.client_id}
-              onMouseEnter={() => {
-                if (!dragSelectionRef.current) {
-                  return
-                }
-
-                dragSelectionRef.current.lastClientId = row.client_id
-                onSelectRowsRange?.(
-                  dragSelectionRef.current.startClientId,
-                  row.client_id,
-                  { append: dragSelectionRef.current.append },
-                )
-              }}
-            >
-              <td
-                className="center-cell row-selector-cell"
-                onMouseDown={(event) => {
-                  event.preventDefault()
-                  const append = event.metaKey || event.ctrlKey
-                  const startClientId =
-                    event.shiftKey && selectionAnchorRef.current
-                      ? selectionAnchorRef.current
-                      : row.client_id
-                  dragSelectionRef.current = {
-                    startClientId,
-                    append,
-                    lastClientId: row.client_id,
-                  }
-                  if (!event.shiftKey || !selectionAnchorRef.current) {
-                    selectionAnchorRef.current = row.client_id
-                  }
-                  onSelectRowsRange?.(startClientId, row.client_id, {
-                    append,
-                  })
-                }}
-              >
-                {(rowNumberOffset ?? 0) + index + 1}
-              </td>
-
-              {columns.map((column) => (
-                <td key={`${row.client_id}:${column.name}`}>
-                  <input
-                    className={`data-cell-input ${
-                      row.values[column.name] == null ? 'is-null' : ''
-                    }`}
-                    disabled={!editable || row.state === 'deleted' || !onValueChange}
-                    value={stringifyCellValue(row.values[column.name] ?? null)}
-                    placeholder="NULL"
-                    onChange={(event) =>
-                      onValueChange?.(
-                        row.client_id,
-                        column.name,
-                        parseCellValue(event.target.value, column),
-                      )
-                    }
-                  />
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function ConsoleView({
-  tab,
-  databaseOptions,
-  schemaTables,
-  schemaCatalog,
-  onResolveSchema,
-  onDatabaseChange,
-  onFormat,
-  onSqlChange,
-  onExecute,
-  onFirstPage,
-  onPrevPage,
-  onNextPage,
-  onLastPage,
-}: {
-  tab: ConsoleTab
-  databaseOptions: DatabaseEntry[]
-  schemaTables: SqlAutocompleteSchema['tables']
-  schemaCatalog: SqlAutocompleteSchema[]
-  onResolveSchema: (databaseName: string) => Promise<SqlAutocompleteSchema | null>
-  onDatabaseChange: (tabId: string, databaseName: string | null) => void
-  onFormat: (tabId: string) => void
-  onSqlChange: (tabId: string, value: string) => void
-  onExecute: () => void
-  onFirstPage: () => void
-  onPrevPage: () => void
-  onNextPage: () => void
-  onLastPage: () => void
-}) {
-  const rangeStart = tab.console.rows.length === 0 ? 0 : tab.console.offset + 1
-  const rangeEnd =
-    tab.console.rows.length === 0
-      ? 0
-      : Math.min(tab.console.offset + tab.console.rows.length, tab.console.total_rows)
-  const atFirstPage = tab.console.offset <= 0 || tab.console.total_rows === 0
-  const atLastPage = tab.console.row_count_exact
-    ? rangeEnd >= tab.console.total_rows
-    : !tab.console.truncated
-  const totalRowsLabel = formatTotalRowsLabel(
-    tab.console.total_rows,
-    tab.console.row_count_exact,
-  )
-
-  return (
-    <div className="editor-page console-page">
-      <div className="console-shell">
-        <div className="console-toolbar">
-          <div className="console-toolbar-left">
-            <button
-              className="console-action run"
-              disabled={tab.console.loading}
-              type="button"
-              onClick={onExecute}
-            >
-              {tab.console.loading ? '运行中' : '运行'}
-            </button>
-            <button
-              className="console-action"
-              disabled={tab.console.loading || !tab.console.sql.trim()}
-              type="button"
-              onClick={() => onFormat(tab.id)}
-            >
-              格式化 SQL
-            </button>
-          </div>
-
-          <div className="console-toolbar-right">
-            <select
-              className="console-database-select"
-              value={tab.database_name ?? ''}
-              disabled={tab.console.database_loading}
-              onChange={(event) => onDatabaseChange(tab.id, event.target.value || null)}
-            >
-              <option value="">未指定</option>
-              {databaseOptions.map((database) => (
-                <option key={database.name} value={database.name}>
-                  {database.name}
-                </option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="console-editor">
-          <SqlEditor
-            editor_id={tab.id}
-            mode="console"
-            value={tab.console.sql}
-            placeholder="请输入单条 SQL，当前控制台暂不支持一次执行多条语句"
-            database_name={tab.database_name}
-            schema_tables={schemaTables}
-            schema_catalog={schemaCatalog}
-            database_names={databaseOptions.map((database) => database.name)}
-            onResolveSchema={onResolveSchema}
-            onChange={(value) => onSqlChange(tab.id, value)}
-            onExecute={onExecute}
-          />
-        </div>
-      </div>
-
-      {tab.console.error ? <EmptyNotice title="SQL 执行失败" text={tab.console.error} /> : null}
-
-      <div className="grid-shell data-grid-shell">
-        {tab.console.columns.length > 0 ? (
-          <DataGridTable
-            columns={tab.console.columns}
-            editable={false}
-            rows={tab.console.rows}
-            rowNumberOffset={tab.console.offset}
-          />
-        ) : (
-          <div className="empty-notice inline-empty-notice">
-            <strong>
-              {tab.console.result_kind === 'mutation' ? '语句已执行' : '暂无查询结果'}
-            </strong>
-            <p>
-              {tab.console.result_kind === 'mutation'
-                ? `当前语句没有返回结果集，影响 ${tab.console.affected_rows} 行。`
-                : '执行查询后，结果会在这里展示。'}
-            </p>
-          </div>
-        )}
-      </div>
-
-      {tab.console.columns.length > 0 ? (
-        <footer className="page-footer">
-          <span className="page-footer-meta">
-            已加载 {tab.console.rows.length} 行，{tab.console.row_count_exact ? '共' : '至少'}{' '}
-            {tab.console.total_rows} 行
-          </span>
-          <div className="page-footer-center">
-            <div className="pager-shell">
-              <button
-                className="pager-button"
-                disabled={tab.console.loading || atFirstPage}
-                type="button"
-                onClick={onFirstPage}
-              >
-                |&lt;
-              </button>
-              <button
-                className="pager-button"
-                disabled={tab.console.loading || atFirstPage}
-                type="button"
-                onClick={onPrevPage}
-              >
-                &lt;
-              </button>
-              <span className="pager-range">
-                {rangeStart}-{rangeEnd} / {totalRowsLabel}
-              </span>
-              <button
-                className="pager-button"
-                disabled={tab.console.loading || atLastPage}
-                type="button"
-                onClick={onNextPage}
-              >
-                &gt;
-              </button>
-              <button
-                className="pager-button"
-                disabled={tab.console.loading || !tab.console.row_count_exact || atLastPage}
-                type="button"
-                onClick={onLastPage}
-              >
-                &gt;|
-              </button>
-            </div>
-          </div>
-        </footer>
-      ) : null}
-    </div>
-  )
-}
-
-function formatTotalRowsLabel(totalRows: number, rowCountExact: boolean) {
-  return rowCountExact ? `${totalRows}` : `至少 ${totalRows}`
-}
-
 function OutputDock({
   logs,
   outputBodyRef,
@@ -5344,9 +5196,15 @@ function EmptyWorkspace() {
   return <div className="empty-workspace" />
 }
 
-function EmptyNotice({ title, text }: { title: string; text: string }) {
+function WorkspaceLoadingState({
+  title,
+  text,
+}: {
+  title: string
+  text: string
+}) {
   return (
-    <div className="empty-notice">
+    <div className="empty-workspace">
       <strong>{title}</strong>
       <p>{text}</p>
     </div>
@@ -5456,2209 +5314,6 @@ function CompareSidebar({
   )
 }
 
-type CompareSelectionOption = {
-  value: string
-  title: string
-  subtitle?: string
-  usage_count: number
-  search_texts: string[]
-}
-
-function CompareSelectionDropdown({
-  label,
-  placeholder,
-  searchPlaceholder,
-  value,
-  options,
-  disabled = false,
-  emptyText,
-  onChange,
-}: {
-  label: string
-  placeholder: string
-  searchPlaceholder: string
-  value: string
-  options: CompareSelectionOption[]
-  disabled?: boolean
-  emptyText: string
-  onChange: (value: string) => void
-}) {
-  const [open, setOpen] = useState(false)
-  const [query, setQuery] = useState('')
-  const shellRef = useRef<HTMLDivElement | null>(null)
-
-  const selectedOption = options.find((option) => option.value === value) ?? null
-  const filteredOptions = options.filter((option) =>
-    matchCompareFormSearch(option.search_texts, query),
-  )
-
-  useEffect(() => {
-    if (!open) {
-      setQuery('')
-      return
-    }
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (shellRef.current && !shellRef.current.contains(event.target as Node)) {
-        setOpen(false)
-      }
-    }
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setOpen(false)
-      }
-    }
-
-    window.addEventListener('mousedown', handlePointerDown)
-    window.addEventListener('keydown', handleKeyDown)
-
-    return () => {
-      window.removeEventListener('mousedown', handlePointerDown)
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [open])
-
-  useEffect(() => {
-    if (disabled) {
-      setOpen(false)
-    }
-  }, [disabled])
-
-  return (
-    <div className="form-item">
-      <span>{label}</span>
-      <div
-        ref={shellRef}
-        className={`compare-select-shell ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`}
-      >
-        <button
-          className="compare-select-trigger"
-          type="button"
-          disabled={disabled}
-          onClick={() => {
-            if (disabled) {
-              return
-            }
-            setOpen((current) => !current)
-          }}
-        >
-          <div className="compare-select-trigger-copy">
-            <strong className={selectedOption ? '' : 'placeholder'}>
-              {selectedOption?.title ?? placeholder}
-            </strong>
-            {selectedOption?.subtitle ? <span>{selectedOption.subtitle}</span> : null}
-          </div>
-          <div className="compare-select-trigger-side">
-            {selectedOption ? (
-              <span className="compare-select-usage-badge">使用 {selectedOption.usage_count} 次</span>
-            ) : null}
-            <span className="compare-select-chevron" aria-hidden="true" />
-          </div>
-        </button>
-
-        {open ? (
-          <div className="compare-select-panel">
-            <div className="compare-select-search">
-              <input
-                autoFocus
-                placeholder={searchPlaceholder}
-                value={query}
-                onChange={(event) => setQuery(event.target.value)}
-              />
-            </div>
-            <div className="compare-select-options">
-              {filteredOptions.length ? (
-                filteredOptions.map((option) => (
-                  <button
-                    key={option.value}
-                    className={`compare-select-option ${option.value === value ? 'selected' : ''}`}
-                    type="button"
-                    onClick={() => {
-                      onChange(option.value)
-                      setOpen(false)
-                      setQuery('')
-                    }}
-                  >
-                    <div className="compare-select-option-copy">
-                      <strong>{option.title}</strong>
-                      {option.subtitle ? <span>{option.subtitle}</span> : null}
-                    </div>
-                    <span className="compare-select-usage-badge">使用 {option.usage_count} 次</span>
-                  </button>
-                ))
-              ) : (
-                <div className="compare-select-empty">{emptyText}</div>
-              )}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function CompareConnectionForm({
-  compareForm,
-  profiles,
-  compareHistoryItems,
-  databasesByProfile,
-  nodeLoading,
-  profileConnectionState,
-  onSourceProfileChange,
-  onSourceDatabaseChange,
-  onTargetProfileChange,
-  onTargetDatabaseChange,
-}: {
-  compareForm: CompareFormState
-  profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
-  databasesByProfile: Record<string, DatabaseEntry[]>
-  nodeLoading: Record<string, boolean>
-  profileConnectionState: Record<string, 'idle' | 'connected' | 'error'>
-  onSourceProfileChange: (value: string) => void
-  onSourceDatabaseChange: (value: string) => void
-  onTargetProfileChange: (value: string) => void
-  onTargetDatabaseChange: (value: string) => void
-}) {
-  const sortedProfiles = sortCompareProfilesForSelection(profiles, compareHistoryItems)
-  const sourceProfileOptions = sortedProfiles.map((profile) => ({
-    value: profile.id,
-    title: profile.data_source_name,
-    subtitle: [profile.group_name, profile.host, profile.username].filter(Boolean).join(' · '),
-    usage_count: getProfileCompareUsageCount(profile.id, compareHistoryItems),
-    search_texts: [
-      profile.data_source_name,
-      profile.group_name ?? '',
-      profile.host,
-      profile.username,
-    ],
-  }))
-  const targetProfileOptions = sourceProfileOptions
-  const sourceDatabases = sortCompareDatabasesForSelection(
-    compareForm.source_profile_id,
-    databasesByProfile[compareForm.source_profile_id] ?? [],
-    compareHistoryItems,
-  )
-  const targetDatabases = sortCompareDatabasesForSelection(
-    compareForm.target_profile_id,
-    databasesByProfile[compareForm.target_profile_id] ?? [],
-    compareHistoryItems,
-  )
-  const sourceDatabaseOptions = sourceDatabases.map((database) => ({
-    value: database.name,
-    title: database.name,
-    usage_count: getDatabaseCompareUsageCount(
-      compareForm.source_profile_id,
-      database.name,
-      compareHistoryItems,
-    ),
-    search_texts: [database.name],
-  }))
-  const targetDatabaseOptions = targetDatabases.map((database) => ({
-    value: database.name,
-    title: database.name,
-    usage_count: getDatabaseCompareUsageCount(
-      compareForm.target_profile_id,
-      database.name,
-      compareHistoryItems,
-    ),
-    search_texts: [database.name],
-  }))
-
-  const sourceLoading = Boolean(compareForm.source_profile_id) && Boolean(nodeLoading[compareForm.source_profile_id])
-  const targetLoading = Boolean(compareForm.target_profile_id) && Boolean(nodeLoading[compareForm.target_profile_id])
-  const sourceConnected = profileConnectionState[compareForm.source_profile_id] === 'connected'
-  const targetConnected = profileConnectionState[compareForm.target_profile_id] === 'connected'
-
-  return (
-    <div className="form-card compact-form-card compare-form-card">
-      <div className="compare-connection-grid">
-        <div className="compare-connection-panel">
-          <div className="compare-connection-panel-head">
-            <strong>源端</strong>
-            <span className={`status-tag ${sourceConnected ? 'success' : sourceLoading ? 'warning' : 'muted'}`}>
-              {sourceLoading
-                ? '读取中'
-                : sourceConnected
-                  ? `已连接 · ${(databasesByProfile[compareForm.source_profile_id] ?? []).length} 个库`
-                  : compareForm.source_profile_id
-                    ? '待建立连接'
-                    : '未选择'}
-            </span>
-          </div>
-          <div className="form-grid single-column-grid">
-            <CompareSelectionDropdown
-              label="源端数据源"
-              placeholder="请选择数据源"
-              searchPlaceholder="输入关键字模糊搜索"
-              value={compareForm.source_profile_id}
-              options={sourceProfileOptions}
-              emptyText="没有匹配的数据源"
-              onChange={onSourceProfileChange}
-            />
-            <CompareSelectionDropdown
-              label="源端数据库"
-              placeholder={
-                !compareForm.source_profile_id
-                  ? '请先选择数据源'
-                  : sourceLoading
-                    ? '正在加载数据库...'
-                    : sourceConnected
-                      ? '请选择数据库'
-                      : '数据库列表暂未就绪'
-              }
-              searchPlaceholder="输入数据库名搜索"
-              value={compareForm.source_database_name}
-              options={sourceDatabaseOptions}
-              disabled={!compareForm.source_profile_id || sourceLoading}
-              emptyText={
-                compareForm.source_profile_id
-                  ? '当前数据源下没有匹配的数据库'
-                  : '请先选择数据源'
-              }
-              onChange={onSourceDatabaseChange}
-            />
-          </div>
-        </div>
-
-        <div className="compare-connection-panel">
-          <div className="compare-connection-panel-head">
-            <strong>目标端</strong>
-            <span className={`status-tag ${targetConnected ? 'success' : targetLoading ? 'warning' : 'muted'}`}>
-              {targetLoading
-                ? '读取中'
-                : targetConnected
-                  ? `已连接 · ${(databasesByProfile[compareForm.target_profile_id] ?? []).length} 个库`
-                  : compareForm.target_profile_id
-                    ? '待建立连接'
-                    : '未选择'}
-            </span>
-          </div>
-          <div className="form-grid single-column-grid">
-            <CompareSelectionDropdown
-              label="目标端数据源"
-              placeholder="请选择数据源"
-              searchPlaceholder="输入关键字模糊搜索"
-              value={compareForm.target_profile_id}
-              options={targetProfileOptions}
-              emptyText="没有匹配的数据源"
-              onChange={onTargetProfileChange}
-            />
-            <CompareSelectionDropdown
-              label="目标端数据库"
-              placeholder={
-                !compareForm.target_profile_id
-                  ? '请先选择数据源'
-                  : targetLoading
-                    ? '正在加载数据库...'
-                    : targetConnected
-                      ? '请选择数据库'
-                      : '数据库列表暂未就绪'
-              }
-              searchPlaceholder="输入数据库名搜索"
-              value={compareForm.target_database_name}
-              options={targetDatabaseOptions}
-              disabled={!compareForm.target_profile_id || targetLoading}
-              emptyText={
-                compareForm.target_profile_id
-                  ? '当前数据源下没有匹配的数据库'
-                  : '请先选择数据源'
-              }
-              onChange={onTargetDatabaseChange}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function DataCompareWorkspace({
-  state,
-  compareForm,
-  profiles,
-  compareHistoryItems,
-  databasesByProfile,
-  nodeLoading,
-  profileConnectionState,
-  filteredTables,
-  onSourceProfileChange,
-  onSourceDatabaseChange,
-  onTargetProfileChange,
-  onTargetDatabaseChange,
-  onDiscover,
-  onBackToSourceStep,
-  onTableFilterChange,
-  onTableToggle,
-  onSelectAllTables,
-  onClearAllTables,
-  onRunCompare,
-  onExportSql,
-  onCancelCompare,
-  onResultTablePick,
-  onDetailTypeChange,
-  onResultTableToggle,
-  onResultActionToggle,
-  onDetailToggle,
-  onLoadMoreDetail,
-}: {
-  state: DataCompareState
-  compareForm: CompareFormState
-  profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
-  databasesByProfile: Record<string, DatabaseEntry[]>
-  nodeLoading: Record<string, boolean>
-  profileConnectionState: Record<string, 'idle' | 'connected' | 'error'>
-  filteredTables: string[]
-  onSourceProfileChange: (value: string) => void
-  onSourceDatabaseChange: (value: string) => void
-  onTargetProfileChange: (value: string) => void
-  onTargetDatabaseChange: (value: string) => void
-  onDiscover: () => void
-  onBackToSourceStep: () => void
-  onTableFilterChange: (value: string) => void
-  onTableToggle: (tableName: string, checked: boolean) => void
-  onSelectAllTables: () => void
-  onClearAllTables: () => void
-  onRunCompare: () => void
-  onExportSql: () => void
-  onCancelCompare: () => void
-  onResultTablePick: (tableKey: string) => void
-  onDetailTypeChange: (detailType: CompareDetailType) => void
-  onResultTableToggle: (tableKey: string, checked: boolean) => void
-  onResultActionToggle: (
-    tableKey: string,
-    detailType: CompareDetailType,
-    checked: boolean,
-  ) => void
-  onDetailToggle: (
-    tableKey: string,
-    detailType: CompareDetailType,
-    signature: string,
-    checked: boolean,
-  ) => void
-  onLoadMoreDetail: () => void
-}) {
-  const sourceProfile =
-    profiles.find((profile) => profile.id === compareForm.source_profile_id) ?? null
-  const targetProfile =
-    profiles.find((profile) => profile.id === compareForm.target_profile_id) ?? null
-  const sourceTables =
-    state.discovery?.source_tables.filter((tableName) =>
-      tableName.toLowerCase().includes(state.table_filter.trim().toLowerCase()),
-    ) ?? []
-  const targetTables =
-    state.discovery?.target_tables.filter((tableName) =>
-      tableName.toLowerCase().includes(state.table_filter.trim().toLowerCase()),
-    ) ?? []
-  const commonTableSet = new Set(state.discovery?.common_tables ?? [])
-  const sourceOnlyTables = (state.discovery?.source_tables ?? []).filter(
-    (tableName) => !commonTableSet.has(tableName),
-  )
-  const targetOnlyTables = (state.discovery?.target_tables ?? []).filter(
-    (tableName) => !commonTableSet.has(tableName),
-  )
-  const activeResult =
-    state.result?.table_results.find(
-      (item) => buildDataCompareResultTableKey(item) === state.active_table_key,
-    ) ?? null
-  const activeDetailState =
-    (activeResult
-      ? state.detail_pages[state.active_table_key]?.[state.active_detail_type]
-      : null) ?? createEmptyDataCompareDetailState()
-  const selectionSummary = getDataCompareSelectionSummary(
-    state.result,
-    state.selection_by_table,
-  )
-
-  if (state.current_step === 1) {
-    return (
-      <div className="compare-workspace compare-flow-workspace">
-        <div className="compare-page-header">
-          <div>
-            <strong>数据对比</strong>
-            <p>直接在当前页面选择源端与目标端数据库，不再依赖数据源树的额外点击流程。</p>
-          </div>
-          <div className="editor-actions">
-            <button
-              className="flat-button primary"
-              disabled={state.loading_tables || state.running || profiles.length === 0}
-              type="button"
-              onClick={onDiscover}
-            >
-              {state.loading_tables ? '加载中...' : '加载同名表'}
-            </button>
-          </div>
-        </div>
-
-        <div className="glass-card compare-results-card">
-          <div className="section-head">
-            <div>
-              <h2>步骤 1 / 3</h2>
-              <p>选择数据源后即可直接加载数据库列表，并进入同名表筛选阶段。</p>
-            </div>
-          </div>
-          {profiles.length === 0 ? (
-            <EmptyNotice title="暂无数据源" text="先新增或导入数据源，再开始数据对比。" />
-          ) : (
-            <>
-              <CompareConnectionForm
-                compareForm={compareForm}
-                profiles={profiles}
-                compareHistoryItems={compareHistoryItems}
-                databasesByProfile={databasesByProfile}
-                nodeLoading={nodeLoading}
-                profileConnectionState={profileConnectionState}
-                onSourceProfileChange={onSourceProfileChange}
-                onSourceDatabaseChange={onSourceDatabaseChange}
-                onTargetProfileChange={onTargetProfileChange}
-                onTargetDatabaseChange={onTargetDatabaseChange}
-              />
-              <div className="compare-pair-summary">
-                <div className="compare-pair-item">
-                  <span>源端</span>
-                  <strong>
-                    {sourceProfile
-                      ? `${sourceProfile.data_source_name} / ${compareForm.source_database_name || '未选择数据库'}`
-                      : '未选择'}
-                  </strong>
-                </div>
-                <div className="compare-pair-arrow">→</div>
-                <div className="compare-pair-item">
-                  <span>目标端</span>
-                  <strong>
-                    {targetProfile
-                      ? `${targetProfile.data_source_name} / ${compareForm.target_database_name || '未选择数据库'}`
-                      : '未选择'}
-                  </strong>
-                </div>
-              </div>
-            </>
-          )}
-          {state.task_progress ? (
-            <div className="status-panel compare-status-panel">
-              <strong>任务状态</strong>
-              <span>
-                {state.task_progress.completed_tables}/{state.task_progress.total_tables} 表
-              </span>
-              <span>{formatCompareTaskPhaseLabel(state.task_progress.current_phase)}</span>
-              {state.task_progress.current_phase_progress?.total ? (
-                <span>
-                  阶段进度 {state.task_progress.current_phase_progress.current}/
-                  {state.task_progress.current_phase_progress.total}
-                </span>
-              ) : null}
-              {state.task_progress.current_table ? (
-                <span>{state.task_progress.current_table}</span>
-              ) : null}
-              {state.running ? (
-                <button className="flat-button danger" type="button" onClick={onCancelCompare}>
-                  取消任务
-                </button>
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      </div>
-    )
-  }
-
-  if (state.current_step === 2) {
-    return (
-      <div className="compare-workspace compare-flow-workspace">
-        <div className="compare-page-header">
-          <div>
-            <strong>数据对比</strong>
-            <p>完全沿用 mysql-data-compare 的表范围筛选方式：三栏表目录、同名表勾选和差异预检查。</p>
-          </div>
-          <div className="editor-actions">
-            <button className="flat-button" type="button" onClick={onBackToSourceStep}>
-              上一步
-            </button>
-            <button className="flat-button" type="button" onClick={onSelectAllTables}>
-              全选所有表
-            </button>
-            <button className="flat-button" type="button" onClick={onClearAllTables}>
-              清空所有表
-            </button>
-            <button
-              className="flat-button primary"
-              disabled={state.running || state.selected_tables.length === 0}
-              type="button"
-              onClick={onRunCompare}
-            >
-              {state.running ? '对比中...' : '比较并预览'}
-            </button>
-          </div>
-        </div>
-
-        <SummaryCards
-          items={[
-            ['源表总数', String(state.discovery?.source_tables.length ?? 0)],
-            ['目标表总数', String(state.discovery?.target_tables.length ?? 0)],
-            ['可比较同名表', String(state.discovery?.common_tables.length ?? 0)],
-            ['当前选中', String(state.selected_tables.length)],
-          ]}
-        />
-
-        <div className="glass-card compare-results-card">
-          <div className="compare-pair-summary">
-            <div className="compare-pair-item">
-              <span>源端</span>
-              <strong>
-                {sourceProfile
-                  ? `${sourceProfile.data_source_name} / ${compareForm.source_database_name}`
-                  : '未选择'}
-              </strong>
-            </div>
-            <div className="compare-pair-arrow">→</div>
-            <div className="compare-pair-item">
-              <span>目标端</span>
-              <strong>
-                {targetProfile
-                  ? `${targetProfile.data_source_name} / ${compareForm.target_database_name}`
-                  : '未选择'}
-              </strong>
-            </div>
-          </div>
-
-          <div className="form-card compact-form-card compare-filter-card">
-            <label className="form-item">
-              <span>搜索表名</span>
-              <input
-                value={state.table_filter}
-                onChange={(event) => onTableFilterChange(event.target.value)}
-                placeholder="输入关键字筛选源表、同名表和目标表"
-              />
-            </label>
-          </div>
-
-          <div className="compare-database-grid">
-            <CompareDatabaseTablePanel
-              items={sourceTables}
-              title="源数据库表"
-              matchLabel="同名可比较"
-              matchedSet={commonTableSet}
-              soloLabel="仅源端"
-            />
-
-            <div className="compare-catalog-card">
-              <div className="table-panel-head">
-                <div>可比较同名表</div>
-                <div className="small-text">共 {filteredTables.length} 条匹配结果</div>
-              </div>
-              <div className="compare-table-list compare-catalog-list">
-                {filteredTables.length === 0 ? (
-                  <div className="empty-inline">当前没有匹配的可比较表</div>
-                ) : (
-                  filteredTables.map((tableName) => (
-                    <label className="compare-table-item" key={tableName}>
-                      <input
-                        checked={state.selected_tables.includes(tableName)}
-                        type="checkbox"
-                        onChange={(event) =>
-                          onTableToggle(tableName, event.target.checked)
-                        }
-                      />
-                      <span>{tableName}</span>
-                    </label>
-                  ))
-                )}
-              </div>
-            </div>
-
-            <CompareDatabaseTablePanel
-              items={targetTables}
-              title="目标数据库表"
-              matchLabel="同名可比较"
-              matchedSet={commonTableSet}
-              soloLabel="仅目标端"
-            />
-          </div>
-
-          <div className="compare-difference-grid">
-            <CompareDifferenceCard items={sourceOnlyTables} title="仅在源端存在" />
-            <CompareDifferenceCard items={targetOnlyTables} title="仅在目标端存在" />
-          </div>
-        </div>
-      </div>
-    )
-  }
-
-  return (
-    <div className="compare-workspace compare-flow-workspace">
-      <div className="compare-page-header">
-        <div>
-          <strong>数据对比</strong>
-        </div>
-        <div className="editor-actions">
-          <button className="flat-button" type="button" onClick={() => onBackToSourceStep()}>
-            返回表选择
-          </button>
-          <button
-            className="flat-button"
-            disabled={
-              selectionSummary.insert_selected +
-                selectionSummary.update_selected +
-                selectionSummary.delete_selected ===
-              0
-            }
-            type="button"
-            onClick={onExportSql}
-          >
-            导出 SQL
-          </button>
-          <button className="flat-button primary" type="button" onClick={onRunCompare}>
-            重新执行
-          </button>
-        </div>
-      </div>
-
-      {state.result ? (
-        <>
-          <SummaryCards
-            items={[
-              ['总表数', String(state.result.summary.total_tables)],
-              ['已选表', `${selectionSummary.selected_tables}/${state.result.summary.compared_tables}`],
-              ['总耗时', `${state.result.performance.total_elapsed_ms} ms`],
-              [
-                'INSERT（已选/总数）',
-                `${selectionSummary.insert_selected}/${state.result.summary.total_insert_count}`,
-              ],
-              [
-                'UPDATE（已选/总数）',
-                `${selectionSummary.update_selected}/${state.result.summary.total_update_count}`,
-              ],
-              [
-                'DELETE（已选/总数）',
-                `${selectionSummary.delete_selected}/${state.result.summary.total_delete_count}`,
-              ],
-            ]}
-          />
-
-          {state.result.skipped_tables.length > 0 ? (
-            <div className="status-panel warning compare-warning-panel">
-              <strong>跳过的表</strong>
-              {state.result.skipped_tables.map((item) => (
-                <span key={`${item.source_table}:${item.reason}`}>
-                  {item.source_table} {'->'} {item.target_table}：{item.reason}
-                </span>
-              ))}
-            </div>
-          ) : null}
-
-          <div className="compare-main-grid compare-main-stack">
-            <div className="glass-card compare-results-card">
-              <div className="section-head">
-                <div>
-                  <h2>表对比结果</h2>
-                </div>
-              </div>
-              <div className="result-table-wrap">
-                <table className="result-table">
-                  <thead>
-                    <tr>
-                      <th>表名</th>
-                      <th>模式</th>
-                      <th>整表（已选/总数）</th>
-                      <th>INSERT（已选/总数）</th>
-                      <th>UPDATE（已选/总数）</th>
-                      <th>DELETE（已选/总数）</th>
-                      <th>告警</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {state.result.table_results.map((item) => {
-                      const tableKey = buildDataCompareResultTableKey(item)
-                      const tableStats = getDataCompareTableSelectionStats(
-                        item,
-                        state.selection_by_table,
-                      )
-
-                      return (
-                        <tr
-                          className={state.active_table_key === tableKey ? 'active-row' : ''}
-                          key={tableKey}
-                          onClick={() => onResultTablePick(tableKey)}
-                        >
-                          <td>
-                            <button
-                              className="link-button"
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation()
-                                onResultTablePick(tableKey)
-                              }}
-                            >
-                              {item.source_table}
-                            </button>
-                            {item.target_table !== item.source_table ? (
-                              <div className="result-table-meta">
-                                目标表：{item.target_table}
-                              </div>
-                            ) : null}
-                          </td>
-                          <td>{item.compare_mode}</td>
-                          <td>
-                            <CompareResultCheckbox
-                              checked={tableStats.table_checked}
-                              countLabel={`${tableStats.selected_total}/${tableStats.total_total}`}
-                              indeterminate={tableStats.table_indeterminate}
-                              label="整表"
-                              onChange={(checked) =>
-                                onResultTableToggle(tableKey, checked)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <CompareResultCheckbox
-                              checked={tableStats.insert_checked}
-                              countLabel={`${tableStats.insert_selected}/${tableStats.insert_total}`}
-                              indeterminate={tableStats.insert_indeterminate}
-                              label="INSERT"
-                              onChange={(checked) =>
-                                onResultActionToggle(tableKey, 'insert', checked)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <CompareResultCheckbox
-                              checked={tableStats.update_checked}
-                              countLabel={`${tableStats.update_selected}/${tableStats.update_total}`}
-                              indeterminate={tableStats.update_indeterminate}
-                              label="UPDATE"
-                              onChange={(checked) =>
-                                onResultActionToggle(tableKey, 'update', checked)
-                              }
-                            />
-                          </td>
-                          <td>
-                            <CompareResultCheckbox
-                              checked={tableStats.delete_checked}
-                              countLabel={`${tableStats.delete_selected}/${tableStats.delete_total}`}
-                              indeterminate={tableStats.delete_indeterminate}
-                              label="DELETE"
-                              onChange={(checked) =>
-                                onResultActionToggle(tableKey, 'delete', checked)
-                              }
-                            />
-                          </td>
-                          <td>{item.warnings.length > 0 ? item.warnings.join('；') : '--'}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <div className="glass-card compare-detail-card">
-              <div className="section-head">
-                <div>
-                  <h2>表差异详情</h2>
-                  <p>
-                    {activeResult
-                      ? `${activeResult.source_table} -> ${activeResult.target_table}`
-                      : '请选择一张表'}
-                  </p>
-                </div>
-                {activeResult ? (
-                  <div className="compare-history-tabs">
-                    {(['insert', 'update', 'delete'] as CompareDetailType[]).map((detailType) => (
-                      <button
-                        className={`flat-button ${state.active_detail_type === detailType ? 'primary' : ''}`}
-                        key={detailType}
-                        type="button"
-                        onClick={() => onDetailTypeChange(detailType)}
-                      >
-                        {detailType.toUpperCase()}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-
-              {activeResult ? (
-                <>
-                  <div className="compare-detail-summary">
-                    <span>
-                      主键/唯一键：
-                      {(activeResult.key_columns ?? []).length > 0
-                        ? activeResult.key_columns.join('、')
-                        : '未识别'}
-                    </span>
-                    <span>
-                      当前分类已选{' '}
-                      {
-                        getDataCompareActionSelectionStats(
-                          activeResult,
-                          state.selection_by_table,
-                          state.active_detail_type,
-                        ).selected
-                      }
-                      /
-                      {
-                        getDataCompareActionSelectionStats(
-                          activeResult,
-                          state.selection_by_table,
-                          state.active_detail_type,
-                        ).total
-                      }
-                    </span>
-                    <span>
-                      已加载 {activeDetailState.fetched}/{activeDetailState.total}
-                    </span>
-                  </div>
-
-                  {activeResult.warnings.length > 0 ? (
-                    <div className="status-panel warning compare-warning-panel">
-                      {activeResult.warnings.map((warning) => (
-                        <span key={warning}>{warning}</span>
-                      ))}
-                    </div>
-                  ) : null}
-
-                  {activeDetailState.error ? (
-                    <EmptyNotice title="读取差异详情失败" text={activeDetailState.error} />
-                  ) : state.active_detail_type === 'update' ? (
-                    <div className="compare-detail-list">
-                      {activeDetailState.update_items.length === 0 && activeDetailState.loading ? (
-                        <div className="empty-inline">正在加载差异详情...</div>
-                      ) : null}
-                      {activeDetailState.update_items.length === 0 &&
-                      !activeDetailState.loading ? (
-                        <div className="empty-inline">当前分类下没有差异数据</div>
-                      ) : null}
-                      {activeDetailState.update_items.map((item) => (
-                        <div className="compare-detail-item compare-update-item" key={item.signature}>
-                          <div className="compare-update-head">
-                            <label className="detail-check">
-                              <input
-                                checked={isDataCompareDetailSelected(
-                                  activeResult,
-                                  state.selection_by_table,
-                                  'update',
-                                  item.signature,
-                                )}
-                                type="checkbox"
-                                onChange={(event) =>
-                                  onDetailToggle(
-                                    state.active_table_key,
-                                    'update',
-                                    item.signature,
-                                    event.target.checked,
-                                  )
-                                }
-                              />
-                              <span>纳入 SQL</span>
-                            </label>
-                            <span className="status-tag warning">UPDATE</span>
-                            <span className="compare-update-signature">
-                              签名：{item.signature}，差异字段：
-                              {item.diff_columns.length > 0
-                                ? item.diff_columns.join('、')
-                                : '无'}
-                            </span>
-                          </div>
-                          <div className="compare-update-grid">
-                            <SyncedUpdateFieldTables
-                              diffColumns={item.diff_columns}
-                              sourceRow={item.source_row}
-                              targetRow={item.target_row}
-                            />
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <DataCompareRowTable
-                      columns={activeDetailState.row_columns}
-                      detailType={state.active_detail_type}
-                      items={activeDetailState.row_items}
-                      selectionByTable={state.selection_by_table}
-                      tableKey={state.active_table_key}
-                      tableResult={activeResult}
-                      onToggle={onDetailToggle}
-                    />
-                  )}
-
-                  {activeDetailState.loading && activeDetailState.fetched > 0 ? (
-                    <div className="status-panel">正在加载更多差异...</div>
-                  ) : null}
-
-                  {activeDetailState.has_more ? (
-                    <div className="compare-detail-loadmore">
-                      <button className="flat-button" type="button" onClick={onLoadMoreDetail}>
-                        加载更多
-                      </button>
-                    </div>
-                  ) : null}
-                </>
-              ) : (
-                <EmptyNotice title="请选择结果表" text="先在左侧结果表格中选择一张表。" />
-              )}
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="empty-workspace compare-empty-workspace">
-          <strong>等待执行数据对比</strong>
-          <p>完成同名表加载并执行比较后，在这里查看统计结果与明细。</p>
-          <span>当前筛选 {filteredTables.length} 张可比表</span>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function StructureCompareWorkspace({
-  state,
-  compareForm,
-  profiles,
-  compareHistoryItems,
-  databasesByProfile,
-  nodeLoading,
-  profileConnectionState,
-  onSourceProfileChange,
-  onSourceDatabaseChange,
-  onTargetProfileChange,
-  onTargetDatabaseChange,
-  onRunCompare,
-  onBackToSourceStep,
-  onGoToSummaryStep,
-  onBackToDiffStep,
-  detailConcurrencyInput,
-  onDetailConcurrencyInputChange,
-  onExportSql,
-  onCategoryChange,
-  onCategoryToggle,
-  onTableToggle,
-  onDetailToggle,
-}: {
-  state: StructureCompareState
-  compareForm: CompareFormState
-  profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
-  databasesByProfile: Record<string, DatabaseEntry[]>
-  nodeLoading: Record<string, boolean>
-  profileConnectionState: Record<string, 'idle' | 'connected' | 'error'>
-  onSourceProfileChange: (value: string) => void
-  onSourceDatabaseChange: (value: string) => void
-  onTargetProfileChange: (value: string) => void
-  onTargetDatabaseChange: (value: string) => void
-  onRunCompare: () => void
-  onBackToSourceStep: () => void
-  onGoToSummaryStep: () => void
-  onBackToDiffStep: () => void
-  detailConcurrencyInput: string
-  onDetailConcurrencyInputChange: (value: string) => void
-  onExportSql: () => void
-  onCategoryChange: (category: StructureDetailCategory) => void
-  onCategoryToggle: (category: StructureDetailCategory, checked: boolean) => void
-  onTableToggle: (
-    category: StructureDetailCategory,
-    tableName: string,
-    checked: boolean,
-  ) => void
-  onDetailToggle: (
-    category: StructureDetailCategory,
-    tableName: string,
-    forceReload?: boolean,
-  ) => void
-}) {
-  const sourceProfile =
-    profiles.find((profile) => profile.id === compareForm.source_profile_id) ?? null
-  const targetProfile =
-    profiles.find((profile) => profile.id === compareForm.target_profile_id) ?? null
-  const activeItems = getStructureItemsByCategory(state.result, state.active_category)
-  const selectedTotal = getStructureSelectionTotal(state.selection_by_category)
-
-  if (state.current_step === 1) {
-    return (
-      <div className="compare-workspace compare-flow-workspace">
-        <div className="compare-page-header">
-          <div>
-            <strong>结构对比</strong>
-            <p>结构对比的源端与目标端选择已经内聚到当前页面，不再依赖数据源页的额外创建链接。</p>
-          </div>
-          <div className="editor-actions">
-            <button
-              className="flat-button primary"
-              disabled={state.loading || profiles.length === 0}
-              type="button"
-              onClick={onRunCompare}
-            >
-              {state.loading ? '比较中...' : '比较结构'}
-            </button>
-          </div>
-        </div>
-
-        <div className="glass-card compare-results-card">
-          <div className="section-head">
-            <div>
-              <h2>步骤 1 / 3</h2>
-              <p>直接在当前结构对比页选择源端与目标端数据库，然后进入差异分类勾选。</p>
-            </div>
-          </div>
-          {profiles.length === 0 ? (
-            <EmptyNotice title="暂无数据源" text="先新增或导入数据源，再开始结构对比。" />
-          ) : (
-            <>
-              <CompareConnectionForm
-                compareForm={compareForm}
-                profiles={profiles}
-                compareHistoryItems={compareHistoryItems}
-                databasesByProfile={databasesByProfile}
-                nodeLoading={nodeLoading}
-                profileConnectionState={profileConnectionState}
-                onSourceProfileChange={onSourceProfileChange}
-                onSourceDatabaseChange={onSourceDatabaseChange}
-                onTargetProfileChange={onTargetProfileChange}
-                onTargetDatabaseChange={onTargetDatabaseChange}
-              />
-              <div className="compare-pair-summary">
-                <div className="compare-pair-item">
-                  <span>源端</span>
-                  <strong>
-                    {sourceProfile
-                      ? `${sourceProfile.data_source_name} / ${compareForm.source_database_name || '未选择数据库'}`
-                      : '未选择'}
-                  </strong>
-                </div>
-                <div className="compare-pair-arrow">→</div>
-                <div className="compare-pair-item">
-                  <span>目标端</span>
-                  <strong>
-                    {targetProfile
-                      ? `${targetProfile.data_source_name} / ${compareForm.target_database_name || '未选择数据库'}`
-                      : '未选择'}
-                  </strong>
-                </div>
-              </div>
-              <div className="form-card compact-form-card compare-form-card">
-                <div className="form-grid single-column-grid">
-                  <label className="form-item">
-                    <span>结构详情并发度</span>
-                    <input
-                      max={16}
-                      min={1}
-                      placeholder="留空表示自动，首屏仍保持按需加载"
-                      step={1}
-                      type="number"
-                      value={detailConcurrencyInput}
-                      onChange={(event) =>
-                        onDetailConcurrencyInputChange(event.target.value)
-                      }
-                    />
-                  </label>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (state.current_step === 2) {
-    return (
-      <div className="compare-workspace compare-flow-workspace">
-        <div className="compare-page-header">
-          <div>
-            <strong>结构对比</strong>
-            <p>按新增、修改、删除三类查看结构差异，并对每张表单独控制是否保留在本次结果中。</p>
-          </div>
-          <div className="editor-actions">
-            <button className="flat-button" type="button" onClick={onBackToSourceStep}>
-              上一步
-            </button>
-            <button
-              className="flat-button primary"
-              disabled={selectedTotal === 0}
-              type="button"
-              onClick={onGoToSummaryStep}
-            >
-              下一步
-            </button>
-          </div>
-        </div>
-
-        {state.result ? (
-          <>
-            <SummaryCards
-              items={[
-                ['源表数', String(state.result.summary.source_table_count)],
-                ['目标表数', String(state.result.summary.target_table_count)],
-                [
-                  '新增项',
-                  `${state.selection_by_category.added.length}/${state.result.summary.added_table_count}`,
-                ],
-                [
-                  '修改项',
-                  `${state.selection_by_category.modified.length}/${state.result.summary.modified_table_count}`,
-                ],
-                [
-                  '删除项',
-                  `${state.selection_by_category.deleted.length}/${state.result.summary.deleted_table_count}`,
-                ],
-              ]}
-            />
-
-            <div className="glass-card compare-results-card">
-              <div className="compare-structure-tabstrip">
-                {(['added', 'modified', 'deleted'] as StructureDetailCategory[]).map((category) => {
-                  const total = getStructureItemsByCategory(state.result, category).length
-                  const selected = state.selection_by_category[category].length
-
-                  return (
-                    <div
-                      className={`structure-tab-group ${
-                        state.active_category === category ? 'active' : ''
-                      }`}
-                      key={category}
-                    >
-                      <label className="structure-tab-check">
-                        <input
-                          checked={total > 0 && selected === total}
-                          ref={(element) => {
-                            if (!element) {
-                              return
-                            }
-                            element.indeterminate = selected > 0 && selected < total
-                          }}
-                          type="checkbox"
-                          onChange={(event) =>
-                            onCategoryToggle(category, event.target.checked)
-                          }
-                        />
-                      </label>
-                      <button
-                        className={`flat-button ${state.active_category === category ? 'primary' : ''}`}
-                        type="button"
-                        onClick={() => onCategoryChange(category)}
-                      >
-                        {getStructureCategoryLabel(category)} {selected}/{total}
-                      </button>
-                    </div>
-                  )
-                })}
-              </div>
-
-              <div className="section-head">
-                <div>
-                  <h2>{getStructureCategoryLabel(state.active_category)}</h2>
-                  <p>{getStructureCategoryDescription(state.active_category)}</p>
-                </div>
-              </div>
-
-              <div className="compare-detail-list">
-                {activeItems.length === 0 ? (
-                  <EmptyNotice title="当前分类为空" text="这一类结构差异本轮未命中。" />
-                ) : (
-                  activeItems.map((item) => {
-                    const detailKey = buildStructureCompareDetailKey(
-                      state.active_category,
-                      item.table_name,
-                    )
-                    const expanded = state.expanded_detail_keys.includes(detailKey)
-                    const detailState = state.detail_cache[detailKey]
-
-                    return (
-                      <div className="compare-detail-item structure-detail-item" key={detailKey}>
-                        <div className="structure-row">
-                          <label className="structure-row-main">
-                            <input
-                              checked={state.selection_by_category[state.active_category].includes(
-                                item.table_name,
-                              )}
-                              type="checkbox"
-                              onChange={(event) =>
-                                onTableToggle(
-                                  state.active_category,
-                                  item.table_name,
-                                  event.target.checked,
-                                )
-                              }
-                            />
-                            <span className="structure-row-name">{item.table_name}</span>
-                          </label>
-                          <button
-                            className="flat-button"
-                            type="button"
-                            onClick={() =>
-                              onDetailToggle(state.active_category, item.table_name)
-                            }
-                          >
-                            {detailState?.loading ? '加载中...' : expanded ? '收起详情' : '查看详情'}
-                          </button>
-                        </div>
-                        {expanded ? (
-                          <StructureDetailPanel
-                            category={state.active_category}
-                            detailState={detailState}
-                            item={item}
-                            onReload={() =>
-                              onDetailToggle(state.active_category, item.table_name, true)
-                            }
-                          />
-                        ) : null}
-                      </div>
-                    )
-                  })
-                )}
-              </div>
-            </div>
-          </>
-        ) : (
-          <EmptyNotice title="等待执行结构对比" text="先完成源端与目标端选择。" />
-        )}
-      </div>
-    )
-  }
-
-  return (
-    <div className="compare-workspace compare-flow-workspace">
-      <div className="compare-page-header">
-        <div>
-          <strong>结构对比</strong>
-          <p>当前汇总的是本次保留的结构改动范围，便于继续复核和后续导出 SQL。</p>
-        </div>
-        <div className="editor-actions">
-          <button className="flat-button" type="button" onClick={onBackToDiffStep}>
-            返回差异筛选
-          </button>
-          <button
-            className="flat-button"
-            disabled={selectedTotal === 0}
-            type="button"
-            onClick={onExportSql}
-          >
-            导出结构 SQL
-          </button>
-          <button className="flat-button primary" type="button" onClick={onRunCompare}>
-            重新比较
-          </button>
-        </div>
-      </div>
-
-      {state.result ? (
-        <>
-          <SummaryCards
-            items={[
-              ['已选新增表', String(state.selection_by_category.added.length)],
-              ['已选修改表', String(state.selection_by_category.modified.length)],
-              ['已选删除表', String(state.selection_by_category.deleted.length)],
-              ['总耗时', `${state.result.performance.total_elapsed_ms} ms`],
-            ]}
-          />
-          <div className="compare-structure-summary-grid">
-            <CompareDifferenceCard
-              items={state.selection_by_category.added}
-              title="新增项"
-            />
-            <CompareDifferenceCard
-              items={state.selection_by_category.modified}
-              title="修改项"
-            />
-            <CompareDifferenceCard
-              items={state.selection_by_category.deleted}
-              title="删除项"
-            />
-          </div>
-          <div className="status-panel compare-status-panel">
-            <strong>当前库对</strong>
-            <span>
-              {sourceProfile
-                ? `${sourceProfile.data_source_name} / ${compareForm.source_database_name}`
-                : compareForm.source_database_name}
-              {' -> '}
-              {targetProfile
-                ? `${targetProfile.data_source_name} / ${compareForm.target_database_name}`
-                : compareForm.target_database_name}
-            </span>
-            <span>已选结构差异共 {selectedTotal} 项</span>
-          </div>
-        </>
-      ) : (
-        <div className="empty-workspace compare-empty-workspace">
-          <strong>等待执行结构对比</strong>
-          <p>先完成结构比较，再在这里汇总本次保留的结构改动。</p>
-        </div>
-      )}
-    </div>
-  )
-}
-
-function CompareDatabaseTablePanel({
-  items,
-  title,
-  matchLabel,
-  matchedSet,
-  soloLabel,
-}: {
-  items: string[]
-  title: string
-  matchLabel: string
-  matchedSet: Set<string>
-  soloLabel: string
-}) {
-  return (
-    <div className="compare-catalog-card">
-      <div className="table-panel-head">
-        <div>{title}</div>
-        <div className="small-text">{items.length} 张表</div>
-      </div>
-      <div className="compare-catalog-list">
-        {items.length === 0 ? (
-          <div className="empty-inline">没有匹配的表</div>
-        ) : (
-          items.map((tableName) => (
-            <div className="compare-readonly-table-item" key={`${title}:${tableName}`}>
-              <span>{tableName}</span>
-              <span className={`status-tag ${matchedSet.has(tableName) ? 'success' : 'muted'}`}>
-                {matchedSet.has(tableName) ? matchLabel : soloLabel}
-              </span>
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  )
-}
-
-function CompareDifferenceCard({ title, items }: { title: string; items: string[] }) {
-  return (
-    <div className="compare-difference-card">
-      <div className="compare-difference-title">{title}</div>
-      <div className="compare-chip-wrap">
-        {items.length === 0 ? (
-          <span className="empty-inline">无</span>
-        ) : (
-          items.slice(0, 18).map((item) => (
-            <span className="compare-chip" key={`${title}:${item}`}>
-              {item}
-            </span>
-          ))
-        )}
-      </div>
-    </div>
-  )
-}
-
-function CompareResultCheckbox({
-  checked,
-  indeterminate,
-  label,
-  countLabel,
-  onChange,
-}: {
-  checked: boolean
-  indeterminate: boolean
-  label: string
-  countLabel: string
-  onChange: (checked: boolean) => void
-}) {
-  return (
-    <label
-      className="compare-result-check"
-      onClick={(event) => {
-        event.stopPropagation()
-      }}
-    >
-      <input
-        checked={checked}
-        ref={(element) => {
-          if (!element) {
-            return
-          }
-          element.indeterminate = indeterminate
-        }}
-        type="checkbox"
-        onChange={(event) => onChange(event.target.checked)}
-      />
-      <span>{label}</span>
-      <strong>{countLabel}</strong>
-    </label>
-  )
-}
-
-function DataCompareRowTable({
-  columns,
-  items,
-  tableResult,
-  tableKey,
-  detailType,
-  selectionByTable,
-  onToggle,
-}: {
-  columns: string[]
-  items: CompareDetailPageResponse['row_items']
-  tableResult: TableCompareResult
-  tableKey: string
-  detailType: CompareDetailType
-  selectionByTable: Record<string, DataCompareSelectionItem>
-  onToggle: (
-    tableKey: string,
-    detailType: CompareDetailType,
-    signature: string,
-    checked: boolean,
-  ) => void
-}) {
-  if (items.length === 0) {
-    return <div className="empty-inline">当前分类下没有差异数据</div>
-  }
-
-  return (
-    <div className="detail-row-table-wrap">
-      <table className="detail-row-table">
-        <thead>
-          <tr>
-            <th className="detail-row-select-col">勾选</th>
-            {columns.map((column) => (
-              <th key={column}>{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => (
-            <tr key={item.signature}>
-              <td>
-                <label className="detail-check compact-check">
-                  <input
-                    checked={isDataCompareDetailSelected(
-                      tableResult,
-                      selectionByTable,
-                      detailType,
-                      item.signature,
-                    )}
-                    type="checkbox"
-                    onChange={(event) =>
-                      onToggle(
-                        tableKey,
-                        detailType,
-                        item.signature,
-                        event.target.checked,
-                      )
-                    }
-                  />
-                  <span>纳入</span>
-                </label>
-              </td>
-              {columns.map((column) => (
-                <td key={`${item.signature}:${column}`}>
-                  {stringifyCellValue(item.row[column] ?? null)}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
-function SyncedUpdateFieldTables({
-  diffColumns,
-  sourceRow,
-  targetRow,
-}: {
-  diffColumns: string[]
-  sourceRow: JsonRecord
-  targetRow: JsonRecord
-}) {
-  const sourceScrollRef = useRef<HTMLDivElement | null>(null)
-  const targetScrollRef = useRef<HTMLDivElement | null>(null)
-  const syncingTargetRef = useRef<'source' | 'target' | null>(null)
-  const rowKeys = buildUpdateRowKeys(sourceRow, targetRow)
-
-  const syncScroll = (origin: 'source' | 'target') => {
-    if (syncingTargetRef.current === origin) {
-      syncingTargetRef.current = null
-      return
-    }
-
-    const sourceElement = origin === 'source' ? sourceScrollRef.current : targetScrollRef.current
-    const targetElement = origin === 'source' ? targetScrollRef.current : sourceScrollRef.current
-
-    if (!sourceElement || !targetElement) {
-      return
-    }
-
-    syncingTargetRef.current = origin === 'source' ? 'target' : 'source'
-    targetElement.scrollTop = sourceElement.scrollTop
-    targetElement.scrollLeft = sourceElement.scrollLeft
-  }
-
-  return (
-    <>
-      <UpdateFieldTable
-        diffColumns={diffColumns}
-        onScroll={() => syncScroll('source')}
-        row={sourceRow}
-        rowKeys={rowKeys}
-        scrollRef={sourceScrollRef}
-        title="源数据"
-      />
-      <UpdateFieldTable
-        diffColumns={diffColumns}
-        onScroll={() => syncScroll('target')}
-        row={targetRow}
-        rowKeys={rowKeys}
-        scrollRef={targetScrollRef}
-        title="目标数据"
-      />
-    </>
-  )
-}
-
-function UpdateFieldTable({
-  title,
-  row,
-  rowKeys,
-  diffColumns,
-  scrollRef,
-  onScroll,
-}: {
-  title: string
-  row: JsonRecord
-  rowKeys: string[]
-  diffColumns: string[]
-  scrollRef?: RefObject<HTMLDivElement | null>
-  onScroll?: UIEventHandler<HTMLDivElement>
-}) {
-  return (
-    <div className="compare-update-table">
-      <strong>{title}</strong>
-      <div className="compare-update-scroll" ref={scrollRef} onScroll={onScroll}>
-        <div className="compare-update-rows">
-          {rowKeys.map((key) => (
-            <div
-              className={`compare-update-row ${diffColumns.includes(key) ? 'changed' : ''}`}
-              key={`${title}:${key}`}
-            >
-              <span>{key}</span>
-              <code>{stringifyCellValue(row[key] ?? null)}</code>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function buildUpdateRowKeys(sourceRow: JsonRecord, targetRow: JsonRecord) {
-  return Array.from(new Set([...Object.keys(sourceRow), ...Object.keys(targetRow)]))
-}
-
-function StructureDetailPanel({
-  category,
-  item,
-  detailState,
-  onReload,
-}: {
-  category: StructureDetailCategory
-  item: StructureTableItem
-  detailState: StructureCompareDetailCacheItem | undefined
-  onReload: () => void
-}) {
-  if (detailState?.loading) {
-    return <div className="status-panel">正在加载结构详情...</div>
-  }
-
-  if (detailState?.error) {
-    return (
-      <div className="status-panel warning compare-warning-panel">
-        <span>{detailState.error}</span>
-        <button className="flat-button" type="button" onClick={onReload}>
-          重试加载
-        </button>
-      </div>
-    )
-  }
-
-  const detail = detailState?.detail?.detail ?? item
-  const detailPerformance = detailState?.detail?.performance ?? null
-  const slowestStage = getSlowestPerformanceStage(detailPerformance)
-
-  return (
-    <div className="structure-detail-card">
-      {detailPerformance && detailPerformance.total_elapsed_ms > 0 ? (
-        <div className="compare-chip-wrap">
-          <span className="compare-chip">总耗时 {detailPerformance.total_elapsed_ms} ms</span>
-          {slowestStage ? (
-            <span className="compare-chip">
-              最慢：{slowestStage.label} {slowestStage.elapsed_ms} ms
-            </span>
-          ) : null}
-          {detailPerformance.stages.map((stage) => (
-            <span className="compare-chip" key={`${stage.key}:${stage.label}`}>
-              {stage.label} {stage.elapsed_ms} ms
-            </span>
-          ))}
-        </div>
-      ) : null}
-      {detail.warnings.length > 0 ? (
-        <div className="status-panel warning compare-warning-panel">
-          {detail.warnings.map((warning) => (
-            <span key={warning}>{warning}</span>
-          ))}
-        </div>
-      ) : null}
-      {category === 'modified' ? (
-        <>
-          {detail.preview_sql ? (
-            <SqlViewer
-              sql={detail.preview_sql}
-              title="结构同步 SQL"
-            />
-          ) : null}
-          <SqlDiffViewer
-            editor_id={`structure-compare:${item.table_name}`}
-            modified_label="目标端 DDL"
-            modified_sql={detail.target_sql ?? '-- 暂无目标端 DDL'}
-            original_label="源端 DDL"
-            original_sql={detail.source_sql ?? '-- 暂无源端 DDL'}
-          />
-        </>
-      ) : (
-        <SqlViewer
-          sql={detail.preview_sql ?? '-- 暂无可预览 SQL'}
-        />
-      )}
-    </div>
-  )
-}
-
-function SqlViewer({
-  title,
-  sql,
-}: {
-  title?: string
-  sql: string
-}) {
-  return (
-    <div className="compare-sql-block">
-      {title ? <div className="compare-sql-label">{title}</div> : null}
-      <pre className="compare-sql-pre">{sql}</pre>
-    </div>
-  )
-}
-
-function getStructureCategoryLabel(category: StructureDetailCategory) {
-  if (category === 'added') {
-    return '新增项'
-  }
-  if (category === 'modified') {
-    return '修改项'
-  }
-  return '删除项'
-}
-
-function getSlowestPerformanceStage(performance: CompareHistoryPerformance | null) {
-  const stages = performance?.stages ?? []
-  if (stages.length === 0) {
-    return null
-  }
-
-  return stages.reduce((slowest, stage) =>
-    stage.elapsed_ms > slowest.elapsed_ms ? stage : slowest,
-  ) as CompareHistoryPerformance['stages'][number]
-}
-
-function formatCompareTaskPhaseLabel(phase: CompareTaskPhase | null) {
-  switch (phase) {
-    case 'pending':
-      return '等待执行'
-    case 'discover_tables':
-      return '发现表清单'
-    case 'prepare_table':
-      return '准备单表对比'
-    case 'table_checksum':
-      return '表级校验和预筛'
-    case 'keyed_hash_scan':
-      return '键控哈希扫描'
-    case 'chunk_hash_scan':
-      return '分块哈希扫描'
-    case 'source_stage_load':
-      return '写入源端缓存'
-    case 'target_stage_load':
-      return '写入目标端缓存'
-    case 'finalize_cache':
-      return '归并缓存结果'
-    case 'compare_table':
-      return '执行单表比较'
-    case 'completed':
-      return '已完成'
-    default:
-      return 'running'
-  }
-}
-
-function getStructureCategoryDescription(category: StructureDetailCategory) {
-  if (category === 'added') {
-    return '这些表仅存在于源库。'
-  }
-  if (category === 'modified') {
-    return '这些表在两端同名，但建表语句存在差异。'
-  }
-  return '这些表仅存在于目标库。'
-}
-
-function getStructureSelectionTotal(
-  selectionByCategory: Record<StructureDetailCategory, string[]>,
-) {
-  return (
-    selectionByCategory.added.length +
-    selectionByCategory.modified.length +
-    selectionByCategory.deleted.length
-  )
-}
-
-function buildStructureCompareDetailKey(
-  category: StructureDetailCategory,
-  tableName: string,
-) {
-  return `${category}::${tableName}`
-}
-
-function createStructureSelectionState(result: StructureCompareResponse) {
-  return {
-    added: result.added_tables.map((item) => item.table_name),
-    modified: result.modified_tables.map((item) => item.table_name),
-    deleted: result.deleted_tables.map((item) => item.table_name),
-  }
-}
-
-function buildDataCompareResultTableKey(item: TableCompareResult) {
-  return `${item.source_table}__${item.target_table}`
-}
-
-function buildDataCompareTableSelections(
-  result: DataCompareResponse,
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-): TableSqlSelection[] {
-  return result.table_results.map((item) => {
-    const tableKey = buildDataCompareResultTableKey(item)
-    const tableStats = getDataCompareTableSelectionStats(item, selectionByTable)
-
-    return {
-      source_table: item.source_table,
-      target_table: item.target_table,
-      table_enabled: tableStats.selected_total > 0,
-      insert_enabled: tableStats.insert_selected > 0,
-      update_enabled: tableStats.update_selected > 0,
-      delete_enabled: tableStats.delete_selected > 0,
-      excluded_insert_signatures: getDataCompareExcludedSignatures(
-        selectionByTable,
-        tableKey,
-        'insert',
-      ),
-      excluded_update_signatures: getDataCompareExcludedSignatures(
-        selectionByTable,
-        tableKey,
-        'update',
-      ),
-      excluded_delete_signatures: getDataCompareExcludedSignatures(
-        selectionByTable,
-        tableKey,
-        'delete',
-      ),
-    }
-  })
-}
-
-function buildStructureSqlSelection(
-  selectionByCategory: Record<StructureDetailCategory, string[]>,
-): StructureSqlSelection {
-  return {
-    added_tables: selectionByCategory.added,
-    modified_tables: selectionByCategory.modified,
-    deleted_tables: selectionByCategory.deleted,
-  }
-}
-
-function createEmptyDataCompareSelectionItem(): DataCompareSelectionItem {
-  return {
-    table_enabled: true,
-    insert_enabled: true,
-    update_enabled: true,
-    delete_enabled: true,
-    excluded_insert_signatures: [],
-    excluded_update_signatures: [],
-    excluded_delete_signatures: [],
-  }
-}
-
-function createDataCompareSelectionState(result: DataCompareResponse) {
-  return Object.fromEntries(
-    result.table_results.map((item) => [
-      buildDataCompareResultTableKey(item),
-      createEmptyDataCompareSelectionItem(),
-    ]),
-  ) as Record<string, DataCompareSelectionItem>
-}
-
-function createEmptyDataCompareDetailState(): DataCompareDetailState {
-  return {
-    row_columns: [],
-    row_items: [],
-    update_items: [],
-    total: 0,
-    fetched: 0,
-    has_more: false,
-    loading: false,
-    loaded: false,
-    error: '',
-  }
-}
-
-function buildPrunedDataCompareDetailPages(
-  previousPages: DataCompareState['detail_pages'],
-  tableKey: string,
-  detailType: CompareDetailType,
-  detailPage: CompareDetailPageResponse,
-  reset: boolean,
-) {
-  const currentTablePages = {
-    insert: previousPages[tableKey]?.insert ?? createEmptyDataCompareDetailState(),
-    update: previousPages[tableKey]?.update ?? createEmptyDataCompareDetailState(),
-    delete: previousPages[tableKey]?.delete ?? createEmptyDataCompareDetailState(),
-  }
-
-  const nextDetailState: DataCompareDetailState = {
-    ...(currentTablePages[detailType] ?? createEmptyDataCompareDetailState()),
-    row_columns: detailPage.row_columns,
-    row_items:
-      detailType === 'update'
-        ? []
-        : limitDataCompareDetailRows([
-            ...(reset ? [] : currentTablePages[detailType].row_items),
-            ...detailPage.row_items,
-          ]),
-    update_items:
-      detailType === 'update'
-        ? limitDataCompareDetailUpdates([
-            ...(reset ? [] : currentTablePages[detailType].update_items),
-            ...detailPage.update_items,
-          ])
-        : [],
-    total: detailPage.total,
-    fetched:
-      (reset ? 0 : currentTablePages[detailType].fetched) +
-      (detailType === 'update'
-        ? detailPage.update_items.length
-        : detailPage.row_items.length),
-    has_more: detailPage.has_more,
-    loading: false,
-    loaded: true,
-    error: '',
-  }
-
-  return {
-    [tableKey]: {
-      insert:
-        detailType === 'insert'
-          ? nextDetailState
-          : createEmptyDataCompareDetailState(),
-      update:
-        detailType === 'update'
-          ? nextDetailState
-          : createEmptyDataCompareDetailState(),
-      delete:
-        detailType === 'delete'
-          ? nextDetailState
-          : createEmptyDataCompareDetailState(),
-    },
-  }
-}
-
-function limitDataCompareDetailRows(rows: CompareDetailPageResponse['row_items']) {
-  return rows.length <= dataCompareDetailCacheLimit
-    ? rows
-    : rows.slice(-dataCompareDetailCacheLimit)
-}
-
-function limitDataCompareDetailUpdates(updates: CompareDetailPageResponse['update_items']) {
-  return updates.length <= dataCompareDetailCacheLimit
-    ? updates
-    : updates.slice(-dataCompareDetailCacheLimit)
-}
-
-function getDataCompareActionTotalCount(
-  item: TableCompareResult,
-  detailType: CompareDetailType,
-) {
-  if (detailType === 'update') {
-    return item.update_count
-  }
-  if (detailType === 'delete') {
-    return item.delete_count
-  }
-  return item.insert_count
-}
-
-function getDataCompareExcludedSignatures(
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-  tableKey: string,
-  detailType: CompareDetailType,
-) {
-  const selection =
-    selectionByTable[tableKey] ?? createEmptyDataCompareSelectionItem()
-
-  if (detailType === 'update') {
-    return selection.excluded_update_signatures
-  }
-  if (detailType === 'delete') {
-    return selection.excluded_delete_signatures
-  }
-  return selection.excluded_insert_signatures
-}
-
-function getDataCompareActionSelectionStats(
-  item: TableCompareResult,
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-  detailType: CompareDetailType,
-) {
-  const tableKey = buildDataCompareResultTableKey(item)
-  const selection =
-    selectionByTable[tableKey] ?? createEmptyDataCompareSelectionItem()
-  const total = getDataCompareActionTotalCount(item, detailType)
-  const actionEnabled =
-    selection.table_enabled &&
-    (detailType === 'insert'
-      ? selection.insert_enabled
-      : detailType === 'update'
-        ? selection.update_enabled
-        : selection.delete_enabled)
-
-  if (!actionEnabled) {
-    return {
-      selected: 0,
-      total,
-      checked: false,
-      indeterminate: false,
-    }
-  }
-
-  const selected = Math.max(
-    total - getDataCompareExcludedSignatures(selectionByTable, tableKey, detailType).length,
-    0,
-  )
-
-  return {
-    selected,
-    total,
-    checked: total > 0 && selected === total,
-    indeterminate: selected > 0 && selected < total,
-  }
-}
-
-function getDataCompareTableSelectionStats(
-  item: TableCompareResult,
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-) {
-  const insertStats = getDataCompareActionSelectionStats(item, selectionByTable, 'insert')
-  const updateStats = getDataCompareActionSelectionStats(item, selectionByTable, 'update')
-  const deleteStats = getDataCompareActionSelectionStats(item, selectionByTable, 'delete')
-  const selectedTotal = insertStats.selected + updateStats.selected + deleteStats.selected
-  const totalTotal = insertStats.total + updateStats.total + deleteStats.total
-
-  return {
-    selected_total: selectedTotal,
-    total_total: totalTotal,
-    table_checked: totalTotal > 0 && selectedTotal === totalTotal,
-    table_indeterminate: selectedTotal > 0 && selectedTotal < totalTotal,
-    insert_selected: insertStats.selected,
-    insert_total: insertStats.total,
-    insert_checked: insertStats.checked,
-    insert_indeterminate: insertStats.indeterminate,
-    update_selected: updateStats.selected,
-    update_total: updateStats.total,
-    update_checked: updateStats.checked,
-    update_indeterminate: updateStats.indeterminate,
-    delete_selected: deleteStats.selected,
-    delete_total: deleteStats.total,
-    delete_checked: deleteStats.checked,
-    delete_indeterminate: deleteStats.indeterminate,
-  }
-}
-
-function getDataCompareSelectionSummary(
-  result: DataCompareResponse | null,
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-) {
-  return (result?.table_results ?? []).reduce(
-    (summary, item) => {
-      const tableStats = getDataCompareTableSelectionStats(item, selectionByTable)
-      if (tableStats.selected_total > 0) {
-        summary.selected_tables += 1
-      }
-      summary.insert_selected += tableStats.insert_selected
-      summary.update_selected += tableStats.update_selected
-      summary.delete_selected += tableStats.delete_selected
-      return summary
-    },
-    {
-      selected_tables: 0,
-      insert_selected: 0,
-      update_selected: 0,
-      delete_selected: 0,
-    },
-  )
-}
-
-function isDataCompareDetailSelected(
-  item: TableCompareResult,
-  selectionByTable: Record<string, DataCompareSelectionItem>,
-  detailType: CompareDetailType,
-  signature: string,
-) {
-  const tableKey = buildDataCompareResultTableKey(item)
-  const selection =
-    selectionByTable[tableKey] ?? createEmptyDataCompareSelectionItem()
-  const actionEnabled =
-    selection.table_enabled &&
-    (detailType === 'insert'
-      ? selection.insert_enabled
-      : detailType === 'update'
-        ? selection.update_enabled
-        : selection.delete_enabled)
-
-  if (!actionEnabled) {
-    return false
-  }
-
-  return !getDataCompareExcludedSignatures(selectionByTable, tableKey, detailType).includes(
-    signature,
-  )
-}
-
-function toggleExcludedSignature(
-  signatures: string[],
-  signature: string,
-  checked: boolean,
-) {
-  const next = new Set(signatures)
-  if (checked) {
-    next.delete(signature)
-  } else {
-    next.add(signature)
-  }
-  return Array.from(next)
-}
-
-function CompareHistoryWorkspace({
-  historyItems,
-  selectedHistoryItem,
-  historyType,
-  onSelect,
-}: {
-  historyItems: CompareHistoryItem[]
-  selectedHistoryItem: CompareHistoryItem | null
-  historyType: CompareHistoryType
-  onSelect: (historyId: number) => void
-}) {
-  return (
-    <div className="compare-workspace">
-      <div className="compare-page-header">
-        <div>
-          <strong>对比记录</strong>
-          <p>查看本地保存的 {historyType === 'data' ? '数据对比' : '结构对比'} 历史记录。</p>
-        </div>
-      </div>
-
-      <div className="compare-main-grid">
-        <div className="glass-card compare-results-card">
-          <div className="section-head">
-            <div>
-              <h2>记录列表</h2>
-              <p>点击左侧记录，在右侧查看具体统计和涉及表。</p>
-            </div>
-          </div>
-          <div className="compare-detail-list">
-            {historyItems.length === 0 ? (
-              <EmptyNotice title="暂无记录" text="完成一次对比后会自动写入本地记录。" />
-            ) : (
-              historyItems.map((item) => (
-                <button
-                  className={`compare-list-button ${selectedHistoryItem?.id === item.id ? 'active' : ''}`}
-                  key={item.id}
-                  type="button"
-                  onClick={() => onSelect(item.id)}
-                >
-                  <strong>{item.source_data_source_name}</strong>
-                  <span>
-                    {item.source_database} {'->'} {item.target_database}
-                  </span>
-                  <span>{formatDateTime(item.created_at)}</span>
-                </button>
-              ))
-            )}
-          </div>
-        </div>
-
-        <div className="glass-card compare-detail-card">
-          <div className="section-head">
-            <div>
-              <h2>记录详情</h2>
-              <p>{selectedHistoryItem ? '展示表范围、统计和耗时信息。' : '请选择一条记录。'}</p>
-            </div>
-          </div>
-          {selectedHistoryItem ? (
-            <div className="compare-detail-list">
-              <SummaryCards
-                items={
-                  selectedHistoryItem.history_type === 'data'
-                    ? [
-                        ['已对比表', String(selectedHistoryItem.compared_tables)],
-                        ['INSERT', String(selectedHistoryItem.insert_count)],
-                        ['UPDATE', String(selectedHistoryItem.update_count)],
-                        ['DELETE', String(selectedHistoryItem.delete_count)],
-                      ]
-                    : [
-                        ['源端表数', String(selectedHistoryItem.source_table_count)],
-                        ['新增表', String(selectedHistoryItem.structure_added_count)],
-                        ['修改表', String(selectedHistoryItem.structure_modified_count)],
-                        ['删除表', String(selectedHistoryItem.structure_deleted_count)],
-                      ]
-                }
-              />
-              <div className="status-panel">
-                {selectedHistoryItem.source_data_source_name} / {selectedHistoryItem.source_database}
-                {' -> '}
-                {selectedHistoryItem.target_data_source_name} / {selectedHistoryItem.target_database}
-              </div>
-              <div className="compare-summary-list">
-                <span>表范围：{selectedHistoryItem.table_mode === 'all' ? '全部同名表' : '手动选择'}</span>
-                <span>记录时间：{formatDateTime(selectedHistoryItem.created_at)}</span>
-                <span>总耗时：{selectedHistoryItem.performance.total_elapsed_ms} ms</span>
-                <span>涉及表数：{selectedHistoryItem.total_tables}</span>
-              </div>
-              <pre className="code-block">
-                {JSON.stringify(selectedHistoryItem.table_detail, null, 2)}
-              </pre>
-            </div>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function SummaryCards({ items }: { items: [string, string][] }) {
-  return (
-    <div className="compare-summary-grid">
-      {items.map(([label, value]) => (
-        <div className="compare-summary-card" key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-        </div>
-      ))}
-    </div>
-  )
-}
-
 function DatabaseGlyph() {
   return (
     <span className="glyph-badge">
@@ -7732,81 +5387,6 @@ function compareGroupName(left: string, right: string) {
     return -1
   }
   return left.localeCompare(right, 'zh-CN')
-}
-
-function getProfileCompareUsageCount(
-  profileId: string,
-  compareHistoryItems: CompareHistoryItem[],
-) {
-  return compareHistoryItems.reduce((count, item) => {
-    const sourceHit = item.source_profile_id === profileId ? 1 : 0
-    const targetHit = item.target_profile_id === profileId ? 1 : 0
-    return count + sourceHit + targetHit
-  }, 0)
-}
-
-function getDatabaseCompareUsageCount(
-  profileId: string,
-  databaseName: string,
-  compareHistoryItems: CompareHistoryItem[],
-) {
-  return compareHistoryItems.reduce((count, item) => {
-    const sourceHit =
-      item.source_profile_id === profileId && item.source_database === databaseName ? 1 : 0
-    const targetHit =
-      item.target_profile_id === profileId && item.target_database === databaseName ? 1 : 0
-    return count + sourceHit + targetHit
-  }, 0)
-}
-
-function matchCompareFormSearch(searchTexts: string[], query: string) {
-  const normalized = query.trim().toLowerCase()
-  if (!normalized) {
-    return true
-  }
-
-  return searchTexts.some((text) => text.toLowerCase().includes(normalized))
-}
-
-function sortCompareProfilesForSelection(
-  profiles: ConnectionProfile[],
-  compareHistoryItems: CompareHistoryItem[],
-) {
-  return [...profiles].sort((left, right) => {
-    const usageDelta =
-      getProfileCompareUsageCount(right.id, compareHistoryItems) -
-      getProfileCompareUsageCount(left.id, compareHistoryItems)
-    if (usageDelta !== 0) {
-      return usageDelta
-    }
-
-    const groupCompare = compareGroupName(
-      normalizeGroupName(left.group_name),
-      normalizeGroupName(right.group_name),
-    )
-    if (groupCompare !== 0) {
-      return groupCompare
-    }
-
-    return left.data_source_name.localeCompare(right.data_source_name, 'zh-CN')
-  })
-}
-
-function sortCompareDatabasesForSelection(
-  profileId: string,
-  databases: DatabaseEntry[],
-  compareHistoryItems: CompareHistoryItem[],
-) {
-  return [...databases].sort((left, right) => {
-    const usageDelta =
-      getDatabaseCompareUsageCount(profileId, right.name, compareHistoryItems) -
-      getDatabaseCompareUsageCount(profileId, left.name, compareHistoryItems)
-    if (usageDelta !== 0) {
-      return usageDelta
-    }
-
-    return left.name.localeCompare(right.name, 'zh-CN')
-  })
 }
 
 function sortProfiles(profiles: ConnectionProfile[]) {
@@ -7958,40 +5538,6 @@ function buildStructureCompareHistoryInput(
   }
 }
 
-function getStructureItemsByCategory(
-  result: StructureCompareResponse | null,
-  category: StructureDetailCategory,
-) {
-  if (!result) {
-    return []
-  }
-  if (category === 'added') {
-    return result.added_tables
-  }
-  if (category === 'modified') {
-    return result.modified_tables
-  }
-  return result.deleted_tables
-}
-
-function pickFirstStructureCategory(result: StructureCompareResponse): StructureDetailCategory {
-  if (result.added_tables.length > 0) {
-    return 'added'
-  }
-  if (result.modified_tables.length > 0) {
-    return 'modified'
-  }
-  return 'deleted'
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
 function parsePositiveIntegerOrNull(value: string) {
   const normalized = value.trim()
   if (!normalized) {
@@ -8034,6 +5580,134 @@ function buildStructureCompareSqlFileName(compareForm: CompareFormState) {
   const source = compareForm.source_database_name || 'source'
   const target = compareForm.target_database_name || 'target'
   return `${source}_to_${target}_structure_${formatFileDate(new Date())}.sql`
+}
+
+function buildTableDataExportFileName(
+  databaseName: string,
+  tableName: string,
+  format: ExportFileFormat,
+) {
+  return `${databaseName}_${tableName}_${formatFileDate(new Date())}.${format}`
+}
+
+function buildQueryResultExportFileName(
+  databaseName: string | null,
+  format: ExportFileFormat,
+) {
+  const prefix = databaseName || 'query_result'
+  return `${prefix}_${formatFileDate(new Date())}.${format}`
+}
+
+function getExportScopeText(dialog: ExportDialogState) {
+  if (dialog.kind === 'table_data') {
+    if (dialog.scope === 'all_rows') {
+      const hasFilter =
+        Boolean(dialog.load_payload.where_clause?.trim()) ||
+        Boolean(dialog.load_payload.order_by_clause?.trim())
+      return hasFilter ? '当前筛选结果' : '整表数据'
+    }
+    if (dialog.scope === 'selected_rows') {
+      return '所选行'
+    }
+    return '当前页'
+  }
+
+  if (dialog.scope === 'all_rows') {
+    return '完整查询结果'
+  }
+  if (dialog.scope === 'selected_rows') {
+    return '所选行'
+  }
+  return '当前页'
+}
+
+function getExportScopeOptions(dialog: ExportDialogState) {
+  const currentRows = dialog.rows.length
+  const selectedRows = dialog.selected_rows.length
+
+  if (dialog.kind === 'table_data') {
+    const hasFilter =
+      Boolean(dialog.load_payload.where_clause?.trim()) ||
+      Boolean(dialog.load_payload.order_by_clause?.trim())
+
+    return [
+      {
+        value: 'current_page' as ExportScope,
+        label: '当前页',
+        description:
+          currentRows > 0
+            ? `导出当前页已加载的 ${currentRows} 行数据`
+            : '当前页暂无行数据，将仅导出表头',
+        disabled: dialog.columns.length === 0,
+      },
+      {
+        value: 'all_rows' as ExportScope,
+        label: hasFilter ? '当前筛选结果' : '整表数据',
+        description: hasFilter
+          ? '按当前 WHERE / ORDER BY 重新查询并导出全部结果'
+          : '重新查询整张表并导出全部结果',
+        disabled: false,
+      },
+      {
+        value: 'selected_rows' as ExportScope,
+        label: '所选行',
+        description:
+          selectedRows > 0
+            ? `导出当前表格中已选中的 ${selectedRows} 行`
+            : '请先在表格中框选需要导出的行',
+        disabled: selectedRows === 0,
+      },
+    ]
+  }
+
+  return [
+    {
+      value: 'current_page' as ExportScope,
+      label: '当前页',
+      description:
+        currentRows > 0
+          ? `导出当前页已加载的 ${currentRows} 行结果`
+          : '当前页暂无行数据，将仅导出表头',
+      disabled: dialog.columns.length === 0,
+    },
+    {
+      value: 'all_rows' as ExportScope,
+      label: '完整查询结果',
+      description: '重新执行当前 SQL，并导出完整结果集',
+      disabled: false,
+    },
+    {
+      value: 'selected_rows' as ExportScope,
+      label: '所选行',
+      description:
+        selectedRows > 0
+          ? `导出当前结果表格中已选中的 ${selectedRows} 行`
+          : '请先在结果表格中框选需要导出的行',
+      disabled: selectedRows === 0,
+    },
+  ]
+}
+
+async function copyTextToClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'true')
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+
+  const succeeded = document.execCommand('copy')
+  document.body.removeChild(textarea)
+
+  if (!succeeded) {
+    throw new Error('当前环境不支持写入剪贴板')
+  }
 }
 
 function formatOutputTimestamp(date: Date) {
@@ -8204,53 +5878,6 @@ function parseOptionalNumber(raw: string) {
   return Number.isNaN(parsed) ? null : parsed
 }
 
-function createGridRow(row: TableDataRow): DataGridRow {
-  return {
-    client_id: createClientId(),
-    selected: false,
-    state: 'clean',
-    row_key: row.row_key ? { ...row.row_key } : null,
-    original_values: { ...row.values },
-    values: { ...row.values },
-  }
-}
-
-function stringifyCellValue(value: CellValue) {
-  if (value == null) {
-    return 'NULL'
-  }
-  return String(value)
-}
-
-function parseCellValue(raw: string, column: TableDataColumn): CellValue {
-  const normalized = raw.trim()
-  if (!normalized) {
-    return null
-  }
-
-  if (normalized.toUpperCase() === 'NULL') {
-    return null
-  }
-
-  if (
-    /(int|decimal|numeric|float|double|real)/i.test(column.data_type) &&
-    !Number.isNaN(Number(normalized))
-  ) {
-    return Number(normalized)
-  }
-
-  if (/bool/i.test(column.data_type)) {
-    if (normalized === 'true') {
-      return true
-    }
-    if (normalized === 'false') {
-      return false
-    }
-  }
-
-  return raw
-}
-
 function inferDefaultCellValue(rawDefault: string): CellValue {
   if (rawDefault === 'CURRENT_TIMESTAMP') {
     return new Date().toISOString().slice(0, 19).replace('T', ' ')
@@ -8259,94 +5886,6 @@ function inferDefaultCellValue(rawDefault: string): CellValue {
     return Number(rawDefault)
   }
   return rawDefault
-}
-
-function isCellValueEqual(left: CellValue | undefined, right: CellValue | undefined) {
-  if (left === right) {
-    return true
-  }
-
-  return (
-    typeof left === 'number' &&
-    typeof right === 'number' &&
-    Number.isNaN(left) &&
-    Number.isNaN(right)
-  )
-}
-
-function buildChangedDataValues(row: DataGridRow): JsonRecord {
-  return Object.fromEntries(
-    Object.entries(row.values).filter(([columnName, value]) => {
-      if (!Object.prototype.hasOwnProperty.call(row.original_values, columnName)) {
-        return true
-      }
-
-      return !isCellValueEqual(value, row.original_values[columnName])
-    }),
-  ) as JsonRecord
-}
-
-function hasPendingDataMutations(tab: DataTab) {
-  return tab.data.rows.some((row) => {
-    if (row.state === 'new' || row.state === 'deleted') {
-      return true
-    }
-
-    if (row.state !== 'updated' || !row.row_key) {
-      return false
-    }
-
-    return Object.keys(buildChangedDataValues(row)).length > 0
-  })
-}
-
-function hasSelectedDataRowsForDelete(tab: DataTab) {
-  return tab.data.rows.some((row) => row.selected && row.state !== 'deleted')
-}
-
-function hasRestorableSelectedDataRows(tab: DataTab) {
-  return tab.data.rows.some((row) => {
-    if (!row.selected) {
-      return false
-    }
-
-    if (row.state === 'new' || row.state === 'deleted') {
-      return true
-    }
-
-    if (row.state !== 'updated') {
-      return false
-    }
-
-    return Object.keys(buildChangedDataValues(row)).length > 0
-  })
-}
-
-function buildDataMutationPayload(tab: DataTab): ApplyTableDataChangesPayload | null {
-  const insertedRows = tab.data.rows
-    .filter((row) => row.state === 'new')
-    .map((row) => ({ values: row.values }))
-  const updatedRows = tab.data.rows
-    .filter((row) => row.state === 'updated' && row.row_key)
-    .map((row) => ({ row_key: row.row_key!, values: buildChangedDataValues(row) }))
-    .filter((row) => Object.keys(row.values).length > 0)
-  const deletedRows = tab.data.rows
-    .filter((row) => row.state === 'deleted' && row.row_key)
-    .map((row) => ({ row_key: row.row_key! }))
-
-  if (insertedRows.length + updatedRows.length + deletedRows.length === 0) {
-    return null
-  }
-
-  return {
-    profile_id: tab.profile_id,
-    database_name: tab.database_name,
-    table_name: tab.table_name,
-    transaction_mode: tab.data.transaction_mode,
-    inserted_rows: insertedRows,
-    updated_rows: updatedRows,
-    deleted_rows: deletedRows,
-  }
 }
 
 export default App

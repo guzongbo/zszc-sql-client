@@ -1,15 +1,17 @@
 use crate::app_state::AppState;
 use crate::compare_service::{CompareExecutionControl, CompareExecutionUpdate};
 use crate::models::{
-    AppBootstrap, ApplyTableDataChangesPayload, CompareDetailPageRequest,
+    AppBootstrap, ApplyTableDataChangesPayload, ChooseFilePayload, CompareDetailPageRequest,
     CompareDetailPageResponse, CompareHistoryInput, CompareHistoryItem,
     CompareTableDiscoveryRequest, CompareTableDiscoveryResponse, CompareTaskCancelResponse,
     CompareTaskProgressResponse, CompareTaskResultResponse, CompareTaskStartResponse,
-    ChooseFilePayload, ExportSqlFileRequest, ExportSqlFileResponse,
     ConnectionProfile, ConnectionTestResult, CreateDataSourceGroupPayload, CreateDatabasePayload,
     CreateTablePayload, DataCompareRequest, DataCompareResponse, DataSourceGroup, DatabaseEntry,
-    DeleteDataSourceGroupResult, ExecuteSqlPayload, ImportConnectionProfilesResult,
-    LoadSqlAutocompletePayload, LoadTableDataPayload, MutationResult, RenameDataSourceGroupPayload,
+    DeleteDataSourceGroupResult, ExecuteSqlPayload, ExportDataFileResponse,
+    ExportQueryResultFileRequest, ExportQueryResultSqlTextRequest, ExportSqlFileRequest,
+    ExportSqlFileResponse, ExportSqlTextResponse, ExportTableDataFileRequest,
+    ExportTableDataSqlTextRequest, ImportConnectionProfilesResult, LoadSqlAutocompletePayload,
+    LoadTableDataPayload, MutationResult, RenameDataSourceGroupPayload,
     RenameDataSourceGroupResult, SaveConnectionProfilePayload, SaveFileDialogResult,
     SqlAutocompleteSchema, SqlConsoleResult, SqlPreview, StructureCompareDetailRequest,
     StructureCompareDetailResponse, StructureCompareRequest, StructureCompareResponse,
@@ -348,11 +350,38 @@ pub fn compare_cancel(
     Ok(state.compare_tasks.request_cancel(&compare_id))
 }
 
-#[tauri::command]
-pub fn files_choose_sql_path(
+fn save_file_with_dialog(
     payload: Option<ChooseFilePayload>,
+    default_filters: &[(&str, &[&str])],
 ) -> Result<SaveFileDialogResult, String> {
-    let mut dialog = FileDialog::new().add_filter("SQL File", &["sql"]);
+    let mut dialog = FileDialog::new();
+    let mut applied_filter = false;
+
+    if let Some(filters) = payload
+        .as_ref()
+        .and_then(|item| item.filters.as_ref())
+        .filter(|items| !items.is_empty())
+    {
+        for filter in filters {
+            let extensions = filter
+                .extensions
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            if extensions.is_empty() {
+                continue;
+            }
+            dialog = dialog.add_filter(&filter.name, &extensions);
+            applied_filter = true;
+        }
+    }
+
+    if !applied_filter {
+        for (name, extensions) in default_filters {
+            dialog = dialog.add_filter(*name, extensions);
+        }
+    }
+
     if let Some(default_file_name) = payload
         .and_then(|item| item.default_file_name)
         .filter(|item| !item.trim().is_empty())
@@ -365,6 +394,20 @@ pub fn files_choose_sql_path(
         canceled: file_path.is_none(),
         file_path: file_path.map(|item| item.display().to_string()),
     })
+}
+
+#[tauri::command]
+pub fn files_choose_sql_path(
+    payload: Option<ChooseFilePayload>,
+) -> Result<SaveFileDialogResult, String> {
+    save_file_with_dialog(payload, &[("SQL File", &["sql"])])
+}
+
+#[tauri::command]
+pub fn files_choose_export_path(
+    payload: Option<ChooseFilePayload>,
+) -> Result<SaveFileDialogResult, String> {
+    save_file_with_dialog(payload, &[("CSV File", &["csv"]), ("JSON File", &["json"])])
 }
 
 #[tauri::command]
@@ -390,7 +433,10 @@ pub async fn compare_export_sql_file(
     state: State<'_, AppState>,
     payload: ExportSqlFileRequest,
 ) -> Result<ExportSqlFileResponse, String> {
-    payload.compare_request.validate().map_err(to_error_message)?;
+    payload
+        .compare_request
+        .validate()
+        .map_err(to_error_message)?;
     if payload.file_path.trim().is_empty() {
         return Err("file_path 不能为空".to_string());
     }
@@ -447,7 +493,10 @@ pub async fn structure_compare_export_sql_file(
     state: State<'_, AppState>,
     payload: StructureExportSqlFileRequest,
 ) -> Result<StructureExportSqlFileResponse, String> {
-    payload.compare_request.validate().map_err(to_error_message)?;
+    payload
+        .compare_request
+        .validate()
+        .map_err(to_error_message)?;
     if payload.file_path.trim().is_empty() {
         return Err("file_path 不能为空".to_string());
     }
@@ -582,6 +631,34 @@ pub fn load_table_data(
 }
 
 #[tauri::command]
+pub fn export_table_data_file(
+    state: State<'_, AppState>,
+    payload: ExportTableDataFileRequest,
+) -> Result<ExportDataFileResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let profile =
+        load_profile(&state, &payload.load_payload.profile_id).map_err(to_error_message)?;
+    state
+        .mysql_service
+        .export_table_data_file(&profile, &payload)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn export_table_data_sql_text(
+    state: State<'_, AppState>,
+    payload: ExportTableDataSqlTextRequest,
+) -> Result<ExportSqlTextResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let profile =
+        load_profile(&state, &payload.load_payload.profile_id).map_err(to_error_message)?;
+    state
+        .mysql_service
+        .export_table_data_sql_text(&profile, &payload)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
 pub fn apply_table_data_changes(
     state: State<'_, AppState>,
     payload: ApplyTableDataChangesPayload,
@@ -614,6 +691,34 @@ pub fn execute_sql(
     state
         .mysql_service
         .execute_sql(&profile, &payload)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn export_query_result_file(
+    state: State<'_, AppState>,
+    payload: ExportQueryResultFileRequest,
+) -> Result<ExportDataFileResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let profile =
+        load_profile(&state, &payload.execute_payload.profile_id).map_err(to_error_message)?;
+    state
+        .mysql_service
+        .export_query_result_file(&profile, &payload)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn export_query_result_sql_text(
+    state: State<'_, AppState>,
+    payload: ExportQueryResultSqlTextRequest,
+) -> Result<ExportSqlTextResponse, String> {
+    payload.validate().map_err(to_error_message)?;
+    let profile =
+        load_profile(&state, &payload.execute_payload.profile_id).map_err(to_error_message)?;
+    state
+        .mysql_service
+        .export_query_result_sql_text(&profile, &payload)
         .map_err(to_error_message)
 }
 

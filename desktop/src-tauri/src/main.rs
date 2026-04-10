@@ -124,6 +124,7 @@ fn main() {
             commands::compare_result,
             commands::compare_cancel,
             commands::files_choose_sql_path,
+            commands::files_choose_export_path,
             commands::compare_detail_page,
             commands::compare_export_sql_file,
             commands::structure_compare_run,
@@ -139,9 +140,13 @@ fn main() {
             commands::create_table,
             commands::get_table_ddl,
             commands::load_table_data,
+            commands::export_table_data_file,
+            commands::export_table_data_sql_text,
             commands::preview_table_data_changes,
             commands::apply_table_data_changes,
             commands::execute_sql,
+            commands::export_query_result_file,
+            commands::export_query_result_sql_text,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");

@@ -7,8 +7,8 @@ use std::{
 };
 
 use crate::models::{
-    CompareTaskCancelResponse, CompareTaskPhase, CompareTaskPhaseProgress, CompareTaskProgressResponse,
-    CompareTaskResultResponse, CompareTaskStatus, DataCompareResponse,
+    CompareTaskCancelResponse, CompareTaskPhase, CompareTaskPhaseProgress,
+    CompareTaskProgressResponse, CompareTaskResultResponse, CompareTaskStatus, DataCompareResponse,
 };
 
 #[derive(Debug, Clone, Default)]

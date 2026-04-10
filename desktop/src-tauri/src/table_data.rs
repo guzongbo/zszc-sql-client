@@ -189,7 +189,7 @@ impl MysqlService {
         })
     }
 
-    fn load_table_data_context(
+    pub(super) fn load_table_data_context(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,

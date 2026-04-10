@@ -366,8 +366,31 @@ export type SaveFileDialogResult = {
   file_path: string | null
 }
 
+export type ChooseFileFilter = {
+  name: string
+  extensions: string[]
+}
+
 export type ChooseFilePayload = {
   default_file_name?: string | null
+  filters?: ChooseFileFilter[] | null
+}
+
+export type ExportFileFormat = 'csv' | 'json' | 'sql'
+
+export type ExportScope = 'current_page' | 'all_rows' | 'selected_rows'
+
+export type ExportDataFileResponse = {
+  file_path: string
+  row_count: number
+  export_format: ExportFileFormat
+  scope: ExportScope
+}
+
+export type ExportSqlTextResponse = {
+  content: string
+  row_count: number
+  scope: ExportScope
 }
 
 export type CompareHistoryType = 'data' | 'structure'
@@ -540,6 +563,38 @@ export type LoadTableDataPayload = TableIdentity & {
   order_by_clause?: string | null
   limit?: number | null
   offset?: number | null
+}
+
+export type ExportQueryResultFileRequest = {
+  execute_payload: ExecuteSqlPayload
+  file_path: string
+  export_format: ExportFileFormat
+  scope: ExportScope
+  columns: TableDataColumn[]
+  rows: TableDataRow[]
+}
+
+export type ExportQueryResultSqlTextRequest = {
+  execute_payload: ExecuteSqlPayload
+  scope: ExportScope
+  columns: TableDataColumn[]
+  rows: TableDataRow[]
+}
+
+export type ExportTableDataFileRequest = {
+  load_payload: LoadTableDataPayload
+  file_path: string
+  export_format: ExportFileFormat
+  scope: ExportScope
+  columns: TableDataColumn[]
+  rows: TableDataRow[]
+}
+
+export type ExportTableDataSqlTextRequest = {
+  load_payload: LoadTableDataPayload
+  scope: ExportScope
+  columns: TableDataColumn[]
+  rows: TableDataRow[]
 }
 
 export type InsertedRowPayload = {

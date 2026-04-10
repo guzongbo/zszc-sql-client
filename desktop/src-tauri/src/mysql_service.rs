@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::Duration;
 
+#[path = "data_export.rs"]
+mod data_export;
 #[path = "sql_console.rs"]
 mod sql_console;
 #[path = "table_data.rs"]

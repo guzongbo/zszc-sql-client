@@ -1,4 +1,4 @@
-use crate::compare_core::utils::value::{sql_literal, RowMap};
+use crate::compare_core::utils::value::{RowMap, sql_literal};
 
 pub fn quote_identifier(identifier: &str) -> String {
     format!("`{}`", identifier.replace('`', "``"))

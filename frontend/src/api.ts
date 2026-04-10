@@ -24,8 +24,14 @@ import type {
   DataSourceGroup,
   DeleteDataSourceGroupResult,
   ExecuteSqlPayload,
+  ExportDataFileResponse,
+  ExportQueryResultFileRequest,
+  ExportQueryResultSqlTextRequest,
   ExportSqlFileRequest,
   ExportSqlFileResponse,
+  ExportSqlTextResponse,
+  ExportTableDataFileRequest,
+  ExportTableDataSqlTextRequest,
   ImportConnectionProfilesResult,
   LoadSqlAutocompletePayload,
   LoadTableDataPayload,
@@ -245,6 +251,15 @@ export async function chooseSqlExportPath(
   return invokeCommand<SaveFileDialogResult>('files_choose_sql_path', { payload })
 }
 
+export async function chooseExportPath(
+  payload?: ChooseFilePayload,
+): Promise<SaveFileDialogResult> {
+  if (!isDesktopShell()) {
+    return mockApi.chooseExportPath(payload)
+  }
+  return invokeCommand<SaveFileDialogResult>('files_choose_export_path', { payload })
+}
+
 export async function loadDataCompareDetailPage(
   payload: CompareDetailPageRequest,
 ): Promise<CompareDetailPageResponse> {
@@ -378,6 +393,24 @@ export async function loadTableData(
   return invokeCommand<TableDataPage>('load_table_data', { payload })
 }
 
+export async function exportTableDataFile(
+  payload: ExportTableDataFileRequest,
+): Promise<ExportDataFileResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportTableDataFile(payload)
+  }
+  return invokeCommand<ExportDataFileResponse>('export_table_data_file', { payload })
+}
+
+export async function exportTableDataSqlText(
+  payload: ExportTableDataSqlTextRequest,
+): Promise<ExportSqlTextResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportTableDataSqlText(payload)
+  }
+  return invokeCommand<ExportSqlTextResponse>('export_table_data_sql_text', { payload })
+}
+
 export async function previewTableDataChanges(
   payload: ApplyTableDataChangesPayload,
 ): Promise<SqlPreview> {
@@ -401,4 +434,22 @@ export async function executeSql(payload: ExecuteSqlPayload): Promise<SqlConsole
     return mockApi.executeSql(payload)
   }
   return invokeCommand<SqlConsoleResult>('execute_sql', { payload })
+}
+
+export async function exportQueryResultFile(
+  payload: ExportQueryResultFileRequest,
+): Promise<ExportDataFileResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportQueryResultFile(payload)
+  }
+  return invokeCommand<ExportDataFileResponse>('export_query_result_file', { payload })
+}
+
+export async function exportQueryResultSqlText(
+  payload: ExportQueryResultSqlTextRequest,
+): Promise<ExportSqlTextResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.exportQueryResultSqlText(payload)
+  }
+  return invokeCommand<ExportSqlTextResponse>('export_query_result_sql_text', { payload })
 }

@@ -6,7 +6,7 @@ use std::{
     time::Instant,
 };
 
-use futures::{stream, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream};
 use mysql_async::prelude::Queryable;
 use regex::Regex;
 use tracing::info;
@@ -2467,8 +2467,8 @@ fn escape_sql_string(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_structure_line_diff, has_meaningful_structure_difference, normalize_column_fragment,
-        normalize_fragment, parse_create_table, TableOptions,
+        TableOptions, build_structure_line_diff, has_meaningful_structure_difference,
+        normalize_column_fragment, normalize_fragment, parse_create_table,
     };
 
     #[test]

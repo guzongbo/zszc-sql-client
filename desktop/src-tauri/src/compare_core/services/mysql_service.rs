@@ -1,11 +1,11 @@
-use mysql_async::{prelude::Queryable, Conn, OptsBuilder, Pool, Row, Value};
+use mysql_async::{Conn, OptsBuilder, Pool, Row, Value, prelude::Queryable};
 
 use crate::{
     compare_core::errors::AppError,
     compare_core::models::api::{DataSourceConnectionConfig, DbConnectionConfig},
     compare_core::utils::{
         sql_builder::quote_identifier,
-        value::{sql_literal, RowMap},
+        value::{RowMap, sql_literal},
     },
 };
 
@@ -88,8 +88,7 @@ impl MySqlSession {
 
     pub async fn list_tables(&self) -> Result<Vec<String>, AppError> {
         let mut conn = self.pool.get_conn().await.map_err(AppError::from_mysql)?;
-        let sql =
-            "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME";
+        let sql = "SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = ? ORDER BY TABLE_NAME";
         conn.exec_map(sql, (&self.database,), |table_name: String| table_name)
             .await
             .map_err(AppError::from_mysql)

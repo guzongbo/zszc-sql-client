@@ -5,14 +5,14 @@ use std::{
     io::{BufWriter, Write},
     mem,
     sync::{
-        atomic::{AtomicUsize, Ordering as AtomicOrdering},
         Arc,
+        atomic::{AtomicUsize, Ordering as AtomicOrdering},
     },
     time::Instant,
 };
 
-use futures::{stream, StreamExt};
-use mysql_async::{prelude::Queryable, Conn, QueryResult, Row, TextProtocol, Value};
+use futures::{StreamExt, stream};
+use mysql_async::{Conn, QueryResult, Row, TextProtocol, Value, prelude::Queryable};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{info, warn};
 
@@ -29,7 +29,7 @@ use crate::{
         diff_cache_service::{
             CachedDiffPage, CompareCacheWriter, DiffCacheReader, DiffCacheWriter, KeyedStageResult,
         },
-        mysql_service::{row_to_map, MySqlSession, TableColumnDefinition, TableKeyColumns},
+        mysql_service::{MySqlSession, TableColumnDefinition, TableKeyColumns, row_to_map},
     },
     compare_core::utils::{
         sql_builder::{
@@ -37,7 +37,7 @@ use crate::{
             build_update_sql, quote_identifier,
         },
         value::row_to_json_values,
-        value::{key_to_json, row_signature, row_to_json, values_equal, RowMap},
+        value::{RowMap, key_to_json, row_signature, row_to_json, values_equal},
     },
 };
 
@@ -4866,7 +4866,7 @@ fn sanitize_file_name(input: &str) -> String {
 mod tests {
     use mysql_async::Value;
 
-    use super::{chunk_plan_rejection_reason, parse_u64_field, NumericChunkPlan};
+    use super::{NumericChunkPlan, chunk_plan_rejection_reason, parse_u64_field};
 
     #[test]
     fn parse_u64_field_accepts_text_protocol_bytes() {

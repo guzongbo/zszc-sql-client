@@ -50,6 +50,7 @@ import {
   saveConnectionProfile,
   startDataCompareTask,
   testConnectionProfile,
+  writeClipboardText,
 } from './api'
 import {
   getDataCompareActionTotalCount,
@@ -5689,6 +5690,11 @@ function getExportScopeOptions(dialog: ExportDialogState) {
 }
 
 async function copyTextToClipboard(text: string) {
+  if ('__TAURI_INTERNALS__' in window) {
+    await writeClipboardText(text)
+    return
+  }
+
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
     return

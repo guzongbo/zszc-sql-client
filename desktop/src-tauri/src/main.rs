@@ -125,6 +125,7 @@ fn main() {
             commands::compare_cancel,
             commands::files_choose_sql_path,
             commands::files_choose_export_path,
+            commands::clipboard_write_text,
             commands::compare_detail_page,
             commands::compare_export_sql_file,
             commands::structure_compare_run,

@@ -439,7 +439,7 @@ fn build_table_data_sql_text(
             output.push_str(
                 &columns
                     .iter()
-                    .map(|column| render_sql_literal(row.values.get(&column.name)))
+                    .map(|column| render_sql_literal(row.values.get(&column.name), column))
                     .collect::<Vec<_>>()
                     .join(", "),
             );
@@ -470,7 +470,7 @@ fn build_query_result_sql_text(columns: &[TableDataColumn], rows: &[TableDataRow
         output.push_str("SELECT\n");
 
         for (column_index, column) in columns.iter().enumerate() {
-            let literal = render_sql_literal(row.values.get(&column.name));
+            let literal = render_sql_literal(row.values.get(&column.name), column);
             let suffix = if row_index == 0 {
                 format!(" AS {}", quote_identifier(&column.name))
             } else {
@@ -607,7 +607,7 @@ fn write_csv_line(writer: &mut BufWriter<File>, fields: &[String]) -> Result<()>
     writer.write_all(b"\n").context("写入 CSV 导出文件失败")
 }
 
-fn render_sql_literal(value: Option<&JsonValue>) -> String {
+fn render_sql_literal(value: Option<&JsonValue>, column: &TableDataColumn) -> String {
     match value {
         None | Some(JsonValue::Null) => "NULL".to_string(),
         Some(JsonValue::Bool(boolean)) => {
@@ -618,11 +618,84 @@ fn render_sql_literal(value: Option<&JsonValue>) -> String {
             }
         }
         Some(JsonValue::Number(number)) => number.to_string(),
-        Some(JsonValue::String(text)) => quote_sql_string(text),
+        Some(JsonValue::String(text)) => render_string_sql_literal(text, column),
         Some(other) => quote_sql_string(&serde_json::to_string(other).unwrap_or_default()),
     }
 }
 
 fn quote_sql_string(raw: &str) -> String {
     format!("'{}'", raw.replace('\\', "\\\\").replace('\'', "\\'"))
+}
+
+fn render_string_sql_literal(text: &str, column: &TableDataColumn) -> String {
+    if is_bit_like_type(&column.data_type) && contains_unprintable_control_chars(text) {
+        return render_bit_literal(text.as_bytes(), &column.data_type);
+    }
+
+    if is_binary_like_type(&column.data_type) && contains_unprintable_control_chars(text) {
+        return render_hex_literal(text.as_bytes());
+    }
+
+    quote_sql_string(text)
+}
+
+fn is_bit_like_type(data_type: &str) -> bool {
+    data_type.trim().to_ascii_lowercase().starts_with("bit")
+}
+
+fn is_binary_like_type(data_type: &str) -> bool {
+    let normalized = data_type.trim().to_ascii_lowercase();
+    normalized.starts_with("binary")
+        || normalized.starts_with("varbinary")
+        || normalized.contains("blob")
+}
+
+fn contains_unprintable_control_chars(text: &str) -> bool {
+    text.chars()
+        .any(|char| char.is_control() && !matches!(char, '\n' | '\r' | '\t'))
+}
+
+fn render_bit_literal(bytes: &[u8], data_type: &str) -> String {
+    let declared_width = parse_bit_width(data_type);
+
+    if declared_width == Some(1) && bytes.len() == 1 {
+        return if bytes[0] == 0 {
+            "0".to_string()
+        } else {
+            "1".to_string()
+        };
+    }
+
+    let bit_string = bytes
+        .iter()
+        .flat_map(|byte| {
+            (0..8)
+                .rev()
+                .map(move |offset| if (byte >> offset) & 1 == 1 { '1' } else { '0' })
+        })
+        .collect::<String>();
+
+    let normalized_bit_string = if let Some(width) = declared_width {
+        if bit_string.len() > width {
+            bit_string[bit_string.len() - width..].to_string()
+        } else if bit_string.len() < width {
+            format!("{}{}", "0".repeat(width - bit_string.len()), bit_string)
+        } else {
+            bit_string
+        }
+    } else {
+        bit_string
+    };
+
+    format!("b'{}'", normalized_bit_string)
+}
+
+fn parse_bit_width(data_type: &str) -> Option<usize> {
+    let start = data_type.find('(')?;
+    let end = data_type[start + 1..].find(')')?;
+    data_type[start + 1..start + 1 + end].trim().parse().ok()
+}
+
+fn render_hex_literal(bytes: &[u8]) -> String {
+    format!("x'{}'", hex::encode_upper(bytes))
 }

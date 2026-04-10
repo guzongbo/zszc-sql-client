@@ -67,6 +67,13 @@ async function invokeCommand<T>(command: string, args?: Record<string, unknown>)
   return invoke<T>(command, args)
 }
 
+export async function writeClipboardText(text: string): Promise<void> {
+  if (!isDesktopShell()) {
+    throw new Error('当前不是桌面端环境')
+  }
+  await invokeCommand<void>('clipboard_write_text', { text })
+}
+
 export async function getAppBootstrap(): Promise<AppBootstrap> {
   if (!isDesktopShell()) {
     return mockApi.getAppBootstrap()

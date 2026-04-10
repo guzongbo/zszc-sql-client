@@ -116,7 +116,6 @@ export function DataGridTable({
                     }`}
                     disabled={!editable || row.state === 'deleted' || !onValueChange}
                     value={stringifyCellValue(row.values[column.name] ?? null)}
-                    placeholder="NULL"
                     onChange={(event) =>
                       onValueChange?.(
                         row.client_id,

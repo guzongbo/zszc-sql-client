@@ -24,7 +24,7 @@ export function createGridRow(row: TableDataRow): DataGridRow {
 
 export function stringifyCellValue(value: CellValue) {
   if (value == null) {
-    return 'NULL'
+    return 'null'
   }
   return String(value)
 }
@@ -32,7 +32,7 @@ export function stringifyCellValue(value: CellValue) {
 export function parseCellValue(raw: string, column: TableDataColumn): CellValue {
   const normalized = raw.trim()
   if (!normalized) {
-    return null
+    return isTextLikeColumn(column) ? '' : null
   }
 
   if (normalized.toUpperCase() === 'NULL') {
@@ -56,6 +56,17 @@ export function parseCellValue(raw: string, column: TableDataColumn): CellValue 
   }
 
   return raw
+}
+
+function isTextLikeColumn(column: TableDataColumn) {
+  const normalizedType = column.data_type.trim().toLowerCase()
+  return (
+    normalizedType.includes('char') ||
+    normalizedType.includes('text') ||
+    normalizedType.includes('enum') ||
+    normalizedType.includes('set') ||
+    normalizedType.includes('json')
+  )
 }
 
 function isCellValueEqual(left: CellValue | undefined, right: CellValue | undefined) {

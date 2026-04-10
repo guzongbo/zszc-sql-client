@@ -20,6 +20,7 @@ use crate::models::{
 };
 use crate::navicat::parse_navicat_connections;
 use anyhow::{Result, anyhow};
+use arboard::Clipboard;
 use rfd::FileDialog;
 use std::fs;
 use std::sync::atomic::Ordering;
@@ -408,6 +409,12 @@ pub fn files_choose_export_path(
     payload: Option<ChooseFilePayload>,
 ) -> Result<SaveFileDialogResult, String> {
     save_file_with_dialog(payload, &[("CSV File", &["csv"]), ("JSON File", &["json"])])
+}
+
+#[tauri::command]
+pub fn clipboard_write_text(text: String) -> Result<(), String> {
+    let mut clipboard = Clipboard::new().map_err(to_error_message)?;
+    clipboard.set_text(text).map_err(to_error_message)
 }
 
 #[tauri::command]

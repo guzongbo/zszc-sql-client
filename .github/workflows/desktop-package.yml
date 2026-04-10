@@ -13,13 +13,6 @@ concurrency:
 jobs:
   mac-arm64:
     runs-on: macos-14
-    env:
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -47,6 +40,10 @@ jobs:
       - name: Prepare Apple signing
         id: apple_signing
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           echo "enabled=false" >> "$GITHUB_OUTPUT"
 
@@ -100,14 +97,25 @@ jobs:
       - name: Build macOS arm64 DMG With Apple Signing
         if: ${{ steps.apple_signing.outputs.enabled == 'true' }}
         env:
-          APPLE_ID: ${{ env.APPLE_ID }}
-          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ steps.apple_signing.outputs.signing_identity }}
         run: npm --prefix desktop run build:mac-arm64-dmg
 
       - name: Build macOS arm64 DMG With Ad-hoc Signing
         if: ${{ steps.apple_signing.outputs.enabled != 'true' }}
+        env:
+          APPLE_ID: ""
+          APPLE_PASSWORD: ""
+          APPLE_TEAM_ID: ""
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
+          KEYCHAIN_PASSWORD: ""
+          APPLE_SIGNING_IDENTITY: ""
         run: npm --prefix desktop run build:mac-arm64-dmg
 
       - name: Upload macOS arm64 artifact
@@ -120,13 +128,6 @@ jobs:
 
   mac-x64:
     runs-on: macos-15-intel
-    env:
-      APPLE_ID: ${{ secrets.APPLE_ID }}
-      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -154,6 +155,10 @@ jobs:
       - name: Prepare Apple signing
         id: apple_signing
         shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
         run: |
           echo "enabled=false" >> "$GITHUB_OUTPUT"
 
@@ -207,14 +212,25 @@ jobs:
       - name: Build macOS x64 DMG With Apple Signing
         if: ${{ steps.apple_signing.outputs.enabled == 'true' }}
         env:
-          APPLE_ID: ${{ env.APPLE_ID }}
-          APPLE_PASSWORD: ${{ env.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ env.APPLE_TEAM_ID }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ steps.apple_signing.outputs.signing_identity }}
         run: npm --prefix desktop run build:mac-x64-dmg
 
       - name: Build macOS x64 DMG With Ad-hoc Signing
         if: ${{ steps.apple_signing.outputs.enabled != 'true' }}
+        env:
+          APPLE_ID: ""
+          APPLE_PASSWORD: ""
+          APPLE_TEAM_ID: ""
+          APPLE_CERTIFICATE: ""
+          APPLE_CERTIFICATE_PASSWORD: ""
+          KEYCHAIN_PASSWORD: ""
+          APPLE_SIGNING_IDENTITY: ""
         run: npm --prefix desktop run build:mac-x64-dmg
 
       - name: Upload macOS x64 artifact

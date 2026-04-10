@@ -10,6 +10,7 @@ import {
 import './App.css'
 import {
   addCompareHistory,
+  assignProfilesToDataSourceGroup,
   applyTableDataChanges,
   applyTableDesignChanges,
   cancelDataCompareTask,
@@ -82,6 +83,7 @@ import {
 import type { ConsoleTab, DataGridRow, DataTab } from './features/workspace/types'
 import { EmptyNotice } from './shared/components/EmptyNotice'
 import type {
+  AssignProfilesToDataSourceGroupResult,
   AppBootstrap,
   CellValue,
   CompareDetailType,
@@ -176,7 +178,29 @@ type DesignTab = {
   design: DesignTabState
 }
 
-type WorkspaceTab = ProfileTab | DesignTab | DataTab | ConsoleTab
+type GroupAssignmentTabState = {
+  target_group_id: string
+  filter_text: string
+  selected_profile_ids: string[]
+  submitting: boolean
+}
+
+type GroupAssignmentTab = {
+  id: string
+  kind: 'group_assignment'
+  title: string
+  subtitle: string
+  status: 'ready' | 'busy'
+  error: string
+  assignment: GroupAssignmentTabState
+}
+
+type WorkspaceTab =
+  | ProfileTab
+  | DesignTab
+  | DataTab
+  | ConsoleTab
+  | GroupAssignmentTab
 
 type SqlPreviewState = {
   title: string
@@ -187,6 +211,13 @@ type SqlPreviewState = {
 }
 
 type TreeContextMenuState =
+  | {
+      kind: 'group'
+      x: number
+      y: number
+      group_id: string
+      group_name: string
+    }
   | { kind: 'profile'; x: number; y: number; profile_id: string }
   | {
       kind: 'database'
@@ -254,7 +285,12 @@ type OutputLogEntry = {
   sql?: string
 }
 
-type GroupedProfiles = [string, ConnectionProfile[]][]
+type DataSourceTreeGroup = {
+  key: string
+  group_id: string | null
+  group_name: string
+  profiles: ConnectionProfile[]
+}
 
 const ungroupedGroupName = '未分组'
 const commonDataTypes = [
@@ -293,6 +329,15 @@ function createProfileEditorState(
     create_group_name: '',
     editing_group_id: null,
     editing_group_name: '',
+  }
+}
+
+function createGroupAssignmentState(groupId: string): GroupAssignmentTabState {
+  return {
+    target_group_id: groupId,
+    filter_text: '',
+    selected_profile_ids: [],
+    submitting: false,
   }
 }
 
@@ -597,6 +642,87 @@ function App() {
         : [...previous, nextTab]
     })
     setActiveTabId(nextTab.id)
+  }
+
+  function openGroupAssignmentTab(group: DataSourceGroup) {
+    upsertTab({
+      id: `group-assignment:${group.id}`,
+      kind: 'group_assignment',
+      title: `分组归类 · ${group.group_name}`,
+      subtitle: '勾选数据源后批量加入当前分组',
+      status: 'ready',
+      error: '',
+      assignment: createGroupAssignmentState(group.id),
+    })
+  }
+
+  function updateGroupAssignmentFilter(tabId: string, value: string) {
+    patchTab(tabId, (tab) =>
+      tab.kind === 'group_assignment'
+        ? {
+            ...tab,
+            assignment: {
+              ...tab.assignment,
+              filter_text: value,
+            },
+          }
+        : tab,
+    )
+  }
+
+  function toggleGroupAssignmentProfile(tabId: string, profileId: string, checked: boolean) {
+    patchTab(tabId, (tab) => {
+      if (tab.kind !== 'group_assignment') {
+        return tab
+      }
+
+      const selected = new Set(tab.assignment.selected_profile_ids)
+      if (checked) {
+        selected.add(profileId)
+      } else {
+        selected.delete(profileId)
+      }
+
+      return {
+        ...tab,
+        assignment: {
+          ...tab.assignment,
+          selected_profile_ids: Array.from(selected),
+        },
+      }
+    })
+  }
+
+  function selectAllGroupAssignmentProfiles(tabId: string, profileIds: string[]) {
+    patchTab(tabId, (tab) => {
+      if (tab.kind !== 'group_assignment') {
+        return tab
+      }
+
+      const selected = new Set(tab.assignment.selected_profile_ids)
+      profileIds.forEach((profileId) => selected.add(profileId))
+      return {
+        ...tab,
+        assignment: {
+          ...tab.assignment,
+          selected_profile_ids: Array.from(selected),
+        },
+      }
+    })
+  }
+
+  function clearGroupAssignmentSelection(tabId: string) {
+    patchTab(tabId, (tab) =>
+      tab.kind === 'group_assignment'
+        ? {
+            ...tab,
+            assignment: {
+              ...tab.assignment,
+              selected_profile_ids: [],
+            },
+          }
+        : tab,
+    )
   }
 
   async function ensureDatabasesLoaded(
@@ -1744,6 +1870,69 @@ function App() {
     )
   }
 
+  function syncGroupAssignmentTabs(groupId: string, nextGroupName: string | null) {
+    setTabs((previous) => {
+      if (nextGroupName == null) {
+        return previous.filter(
+          (tab) => !(tab.kind === 'group_assignment' && tab.assignment.target_group_id === groupId),
+        )
+      }
+
+      return previous.map((tab) =>
+        tab.kind === 'group_assignment' && tab.assignment.target_group_id === groupId
+          ? {
+              ...tab,
+              title: `分组归类 · ${nextGroupName}`,
+              subtitle: '勾选数据源后批量加入当前分组',
+            }
+          : tab,
+      )
+    })
+    setActiveTabId((previous) => {
+      if (nextGroupName == null && previous === `group-assignment:${groupId}`) {
+        return ''
+      }
+      return previous
+    })
+  }
+
+  function applyGroupAssignmentResult(
+    result: AssignProfilesToDataSourceGroupResult,
+    profileIds: string[],
+  ) {
+    const profileIdSet = new Set(profileIds)
+    setProfiles((previous) =>
+      sortProfiles(
+        previous.map((profile) =>
+          profileIdSet.has(profile.id)
+            ? { ...profile, group_name: result.group_name }
+            : profile,
+        ),
+      ),
+    )
+    setExpandedKeys((previous) => {
+      const next = new Set(previous)
+      next.add(`group:${normalizeGroupName(result.group_name)}`)
+      return next
+    })
+    setTabs((previous) =>
+      previous.map((tab) =>
+        tab.kind === 'profile' && profileIdSet.has(tab.editor.form.id ?? '')
+          ? {
+              ...tab,
+              editor: {
+                ...tab.editor,
+                form: {
+                  ...tab.editor.form,
+                  group_name: result.group_name,
+                },
+              },
+            }
+          : tab,
+      ),
+    )
+  }
+
   async function createProfileGroupFromTab(tab: ProfileTab) {
     patchProfileEditor(tab.id, (editor) => ({
       ...editor,
@@ -1800,6 +1989,7 @@ function App() {
         ),
       )
       syncGroupNameAcrossState(result.previous_group_name, result.group_name)
+      syncGroupAssignmentTabs(groupId, result.group_name)
       patchProfileEditor(tab.id, (editor) => ({
         ...editor,
         group_busy: false,
@@ -1833,6 +2023,7 @@ function App() {
         previous.filter((currentGroup) => currentGroup.id !== group.id),
       )
       syncGroupNameAcrossState(result.group_name, null)
+      syncGroupAssignmentTabs(group.id, null)
       patchProfileEditor(tab.id, (editor) => ({
         ...editor,
         group_busy: false,
@@ -1857,6 +2048,77 @@ function App() {
         group_busy: false,
       }))
       pushToast(error instanceof Error ? error.message : '删除分组失败', 'error')
+    }
+  }
+
+  async function applyProfilesToGroup(tab: GroupAssignmentTab) {
+    const targetGroup = dataSourceGroups.find(
+      (group) => group.id === tab.assignment.target_group_id,
+    )
+    if (!targetGroup) {
+      pushToast('目标分组不存在', 'error')
+      removeTab(tab.id)
+      return
+    }
+
+    if (tab.assignment.selected_profile_ids.length === 0) {
+      pushToast('请先勾选要加入分组的数据源', 'info')
+      return
+    }
+
+    patchTab(tab.id, (currentTab) =>
+      currentTab.kind === 'group_assignment'
+        ? {
+            ...currentTab,
+            status: 'busy',
+            error: '',
+            assignment: {
+              ...currentTab.assignment,
+              submitting: true,
+            },
+          }
+        : currentTab,
+    )
+
+    try {
+      const result = await assignProfilesToDataSourceGroup({
+        group_id: tab.assignment.target_group_id,
+        profile_ids: tab.assignment.selected_profile_ids,
+      })
+      applyGroupAssignmentResult(result, tab.assignment.selected_profile_ids)
+      patchTab(tab.id, (currentTab) =>
+        currentTab.kind === 'group_assignment'
+          ? {
+              ...currentTab,
+              status: 'ready',
+              error: '',
+              assignment: {
+                ...currentTab.assignment,
+                selected_profile_ids: [],
+                submitting: false,
+              },
+            }
+          : currentTab,
+      )
+      pushToast(
+        `已将 ${result.affected_profile_count} 个数据源加入“${result.group_name}”`,
+        'success',
+      )
+    } catch (error) {
+      patchTab(tab.id, (currentTab) =>
+        currentTab.kind === 'group_assignment'
+          ? {
+              ...currentTab,
+              status: 'ready',
+              error: error instanceof Error ? error.message : '批量设置分组失败',
+              assignment: {
+                ...currentTab.assignment,
+                submitting: false,
+              },
+            }
+          : currentTab,
+      )
+      pushToast(error instanceof Error ? error.message : '批量设置分组失败', 'error')
     }
   }
 
@@ -3594,7 +3856,7 @@ function App() {
         : ''
   const selectedProfile =
     profiles.find((profile) => profile.id === selectedProfileId) ?? null
-  const groupedProfiles = buildGroupedProfiles(profiles)
+  const dataSourceTreeGroups = buildDataSourceTreeGroups(dataSourceGroups, profiles)
   const filteredDataCompareTables =
     dataCompareState.discovery?.common_tables.filter((tableName) =>
       tableName.toLowerCase().includes(dataCompareState.table_filter.trim().toLowerCase()),
@@ -3724,37 +3986,57 @@ function App() {
                 <EmptyNotice title="初始化失败" text={bootstrapError} />
               ) : null}
 
-              {!bootstrapError && profiles.length === 0 ? (
+              {!bootstrapError && profiles.length === 0 && dataSourceGroups.length === 0 ? (
                 <EmptyNotice
                   title="暂无数据源"
                   text="点击左上角加号，在右侧工作区创建新的 MySQL 数据源。"
                 />
               ) : null}
 
-              {groupedProfiles.map(([groupName, groupProfiles]) => {
-                const groupKey = `group:${groupName}`
-                const expanded = expandedKeys.has(groupKey)
+              {dataSourceTreeGroups.map((group) => {
+                const expanded = expandedKeys.has(group.key)
 
                 return (
-                  <div className="tree-group" key={groupKey}>
+                  <div className="tree-group" key={group.key}>
                     <button
-                      className={`tree-row group-row ${selectedGroupKey === groupKey ? 'selected' : ''}`}
+                      className={`tree-row group-row ${selectedGroupKey === group.key ? 'selected' : ''}`}
                       type="button"
                       onClick={() => {
-                        setSelectedGroupKey(groupKey)
+                        setSelectedGroupKey(group.key)
                         setSelection({ kind: 'none' })
                         setTreeContextMenu(null)
                       }}
-                      onDoubleClick={() => void toggleNodeExpansion(groupKey)}
+                      onDoubleClick={() => void toggleNodeExpansion(group.key)}
+                      onContextMenu={(event) => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        if (!group.group_id) {
+                          return
+                        }
+
+                        setSelectedGroupKey(group.key)
+                        setSelection({ kind: 'none' })
+                        setTreeContextMenu({
+                          kind: 'group',
+                          x: Math.min(event.clientX, window.innerWidth - 208),
+                          y: Math.min(event.clientY, window.innerHeight - 92),
+                          group_id: group.group_id,
+                          group_name: group.group_name,
+                        })
+                      }}
                     >
                       <span className="tree-caret">{expanded ? '▾' : '▸'}</span>
-                      <span className="tree-node-label">{groupName}</span>
-                      <span className="tree-node-meta">{groupProfiles.length} 个数据源</span>
+                      <span className="tree-node-label">{group.group_name}</span>
+                      <span className="tree-node-meta">{group.profiles.length} 个数据源</span>
                     </button>
 
                     {expanded ? (
                       <div className="tree-children">
-                        {groupProfiles.map((profile) => {
+                        {group.profiles.length === 0 ? (
+                          <div className="tree-empty-note">暂无数据源</div>
+                        ) : null}
+
+                        {group.profiles.map((profile) => {
                           const datasourceKey = `profile:${profile.id}`
                           const datasourceExpanded = expandedKeys.has(datasourceKey)
                           const databases = databasesByProfile[profile.id] ?? []
@@ -4151,6 +4433,19 @@ function App() {
                 </Suspense>
               ) : null}
 
+              {activeTab?.kind === 'group_assignment' ? (
+                <GroupAssignmentView
+                  tab={activeTab}
+                  profiles={profiles}
+                  dataSourceGroups={dataSourceGroups}
+                  onFilterChange={updateGroupAssignmentFilter}
+                  onToggleProfile={toggleGroupAssignmentProfile}
+                  onSelectAll={selectAllGroupAssignmentProfiles}
+                  onClearSelection={clearGroupAssignmentSelection}
+                  onApply={applyProfilesToGroup}
+                />
+              ) : null}
+
               {!activeTab ? <EmptyWorkspace /> : null}
             </div>
 
@@ -4505,6 +4800,26 @@ function App() {
           style={{ left: treeContextMenu.x, top: treeContextMenu.y }}
           onClick={(event) => event.stopPropagation()}
         >
+          {treeContextMenu.kind === 'group' ? (
+            <button
+              className="context-menu-item"
+              type="button"
+              onClick={() => {
+                const targetGroup = dataSourceGroups.find(
+                  (group) => group.id === treeContextMenu.group_id,
+                )
+                if (targetGroup) {
+                  openGroupAssignmentTab(targetGroup)
+                } else {
+                  pushToast('目标分组不存在', 'error')
+                }
+                setTreeContextMenu(null)
+              }}
+            >
+              添加数据源到分组
+            </button>
+          ) : null}
+
           {treeContextMenu.kind === 'profile' ? (
             <button
               className="context-menu-item"
@@ -4633,6 +4948,158 @@ function App() {
         ))}
       </div>
     </main>
+  )
+}
+
+function GroupAssignmentView({
+  tab,
+  profiles,
+  dataSourceGroups,
+  onFilterChange,
+  onToggleProfile,
+  onSelectAll,
+  onClearSelection,
+  onApply,
+}: {
+  tab: GroupAssignmentTab
+  profiles: ConnectionProfile[]
+  dataSourceGroups: DataSourceGroup[]
+  onFilterChange: (tabId: string, value: string) => void
+  onToggleProfile: (tabId: string, profileId: string, checked: boolean) => void
+  onSelectAll: (tabId: string, profileIds: string[]) => void
+  onClearSelection: (tabId: string) => void
+  onApply: (tab: GroupAssignmentTab) => Promise<void>
+}) {
+  const targetGroup =
+    dataSourceGroups.find((group) => group.id === tab.assignment.target_group_id) ?? null
+  const selectedProfileIdSet = new Set(tab.assignment.selected_profile_ids)
+  const validSelectedCount = profiles.filter((profile) =>
+    selectedProfileIdSet.has(profile.id),
+  ).length
+  const filterText = tab.assignment.filter_text.trim().toLowerCase()
+  const filteredProfiles = profiles.filter((profile) => {
+    if (!filterText) {
+      return true
+    }
+
+    const currentGroupName = normalizeGroupName(profile.group_name)
+    return [
+      profile.data_source_name,
+      profile.host,
+      `${profile.host}:${profile.port}`,
+      currentGroupName,
+    ].some((value) => value.toLowerCase().includes(filterText))
+  })
+  const filteredProfileIds = filteredProfiles.map((profile) => profile.id)
+  const allFilteredSelected =
+    filteredProfiles.length > 0 &&
+    filteredProfiles.every((profile) => selectedProfileIdSet.has(profile.id))
+
+  return (
+    <div className="editor-page group-assignment-page">
+      <div className="editor-header">
+        <div>
+          <strong>{targetGroup ? `添加数据源到 ${targetGroup.group_name} 分组` : '分组归类'}</strong>
+          <p>
+            右侧展示全部数据源和当前所属分组。勾选后可一次性加入当前目标分组。
+          </p>
+        </div>
+
+        <div className="editor-actions">
+          <button
+            className="flat-button"
+            disabled={filteredProfiles.length === 0 || allFilteredSelected || tab.assignment.submitting}
+            type="button"
+            onClick={() => onSelectAll(tab.id, filteredProfileIds)}
+          >
+            全选当前列表
+          </button>
+          <button
+            className="flat-button"
+            disabled={validSelectedCount === 0 || tab.assignment.submitting}
+            type="button"
+            onClick={() => onClearSelection(tab.id)}
+          >
+            清空选择
+          </button>
+        </div>
+      </div>
+
+      <div className="form-card">
+        <div className="group-assignment-toolbar">
+          <label className="form-item">
+            <span>筛选数据源</span>
+            <input
+              value={tab.assignment.filter_text}
+              onChange={(event) => onFilterChange(tab.id, event.target.value)}
+              placeholder="按数据源名称、主机或当前分组筛选"
+            />
+          </label>
+
+          <div className="group-assignment-summary">
+            <span>目标分组</span>
+            <strong>{targetGroup?.group_name ?? '分组不存在'}</strong>
+            <small>当前共 {profiles.length} 个数据源，已选择 {validSelectedCount} 个</small>
+          </div>
+        </div>
+      </div>
+
+      {tab.error ? <div className="status-panel warning">{tab.error}</div> : null}
+
+      <div className="form-card group-assignment-card">
+        <div className="group-assignment-list">
+          {filteredProfiles.length === 0 ? (
+            <div className="group-manager-empty">暂无匹配的数据源。</div>
+          ) : (
+            filteredProfiles.map((profile) => {
+              const checked = selectedProfileIdSet.has(profile.id)
+
+              return (
+                <label
+                  className={`group-assignment-row ${checked ? 'selected' : ''}`}
+                  key={profile.id}
+                >
+                  <input
+                    checked={checked}
+                    disabled={tab.assignment.submitting}
+                    type="checkbox"
+                    onChange={(event) =>
+                      onToggleProfile(tab.id, profile.id, event.target.checked)
+                    }
+                  />
+
+                  <div className="group-assignment-main">
+                    <strong>{profile.data_source_name}</strong>
+                    <span>
+                      {profile.host}:{profile.port}
+                    </span>
+                  </div>
+
+                  <div className="group-assignment-meta">
+                    <span>当前分组</span>
+                    <strong>{normalizeGroupName(profile.group_name)}</strong>
+                  </div>
+                </label>
+              )
+            })
+          )}
+        </div>
+
+        <div className="group-assignment-footer">
+          <span>勾选后会覆盖所选数据源原有的分组归属。</span>
+          <button
+            className="flat-button primary"
+            disabled={!targetGroup || validSelectedCount === 0 || tab.assignment.submitting}
+            type="button"
+            onClick={() => void onApply(tab)}
+          >
+            {tab.assignment.submitting
+              ? '处理中...'
+              : `添加 ${validSelectedCount} 个数据源到 ${targetGroup?.group_name ?? ''} 分组`}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -5364,20 +5831,43 @@ function TreeTableGlyph() {
   )
 }
 
-function buildGroupedProfiles(profiles: ConnectionProfile[]): GroupedProfiles {
-  const grouped = new Map<string, ConnectionProfile[]>()
+function buildDataSourceTreeGroups(
+  groups: DataSourceGroup[],
+  profiles: ConnectionProfile[],
+): DataSourceTreeGroup[] {
+  const profilesByGroup = new Map<string, ConnectionProfile[]>()
 
   profiles.forEach((profile) => {
     const groupName = normalizeGroupName(profile.group_name)
-    if (!grouped.has(groupName)) {
-      grouped.set(groupName, [])
+    if (!profilesByGroup.has(groupName)) {
+      profilesByGroup.set(groupName, [])
     }
-    grouped.get(groupName)!.push(profile)
+    profilesByGroup.get(groupName)!.push(profile)
   })
 
-  return Array.from(grouped.entries()).sort(([left], [right]) =>
-    compareGroupName(left, right),
-  )
+  const treeGroups = sortDataSourceGroups(groups).map((group) => {
+    const groupName = normalizeGroupName(group.group_name)
+    const groupProfiles = profilesByGroup.get(groupName) ?? []
+    profilesByGroup.delete(groupName)
+
+    return {
+      key: `group:${groupName}`,
+      group_id: group.id,
+      group_name: group.group_name,
+      profiles: groupProfiles,
+    }
+  })
+
+  const leftoverGroups = Array.from(profilesByGroup.entries())
+    .sort(([left], [right]) => compareGroupName(left, right))
+    .map(([groupName, groupProfiles]) => ({
+      key: `group:${groupName}`,
+      group_id: null,
+      group_name: groupName,
+      profiles: groupProfiles,
+    }))
+
+  return [...treeGroups, ...leftoverGroups]
 }
 
 function compareGroupName(left: string, right: string) {

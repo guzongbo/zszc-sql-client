@@ -1,5 +1,7 @@
 import { mockApi } from './mockData'
 import type {
+  AssignProfilesToDataSourceGroupPayload,
+  AssignProfilesToDataSourceGroupResult,
   AppBootstrap,
   ApplyTableDataChangesPayload,
   ChooseFilePayload,
@@ -110,6 +112,18 @@ export async function deleteDataSourceGroup(
   return invokeCommand<DeleteDataSourceGroupResult>('delete_data_source_group', {
     groupId,
   })
+}
+
+export async function assignProfilesToDataSourceGroup(
+  payload: AssignProfilesToDataSourceGroupPayload,
+): Promise<AssignProfilesToDataSourceGroupResult> {
+  if (!isDesktopShell()) {
+    return mockApi.assignProfilesToDataSourceGroup(payload)
+  }
+  return invokeCommand<AssignProfilesToDataSourceGroupResult>(
+    'assign_profiles_to_data_source_group',
+    { payload },
+  )
 }
 
 export async function importNavicatConnectionProfiles(): Promise<ImportConnectionProfilesResult> {

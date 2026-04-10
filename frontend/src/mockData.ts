@@ -1,4 +1,6 @@
 import type {
+  AssignProfilesToDataSourceGroupPayload,
+  AssignProfilesToDataSourceGroupResult,
   AppBootstrap,
   ApplyTableDataChangesPayload,
   ChooseFilePayload,
@@ -849,6 +851,31 @@ export const mockApi = {
 
     return {
       group_id: groupId,
+      group_name: currentGroup.group_name,
+      affected_profile_count: affectedProfileCount,
+    }
+  },
+
+  async assignProfilesToDataSourceGroup(
+    payload: AssignProfilesToDataSourceGroupPayload,
+  ): Promise<AssignProfilesToDataSourceGroupResult> {
+    const currentGroup = dataSourceGroups.find((item) => item.id === payload.group_id)
+    if (!currentGroup) {
+      throw new Error('数据源分组不存在')
+    }
+
+    const profileIdSet = new Set(payload.profile_ids)
+    const affectedProfileCount = connectionProfiles.filter((item) =>
+      profileIdSet.has(item.id),
+    ).length
+    connectionProfiles = connectionProfiles.map((item) =>
+      profileIdSet.has(item.id)
+        ? { ...item, group_name: currentGroup.group_name, updated_at: now }
+        : item,
+    )
+
+    return {
+      group_id: currentGroup.id,
       group_name: currentGroup.group_name,
       affected_profile_count: affectedProfileCount,
     }

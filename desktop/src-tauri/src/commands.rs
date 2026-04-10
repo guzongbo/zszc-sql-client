@@ -1,7 +1,8 @@
 use crate::app_state::AppState;
 use crate::compare_service::{CompareExecutionControl, CompareExecutionUpdate};
 use crate::models::{
-    AppBootstrap, ApplyTableDataChangesPayload, ChooseFilePayload, CompareDetailPageRequest,
+    AppBootstrap, ApplyTableDataChangesPayload, AssignProfilesToDataSourceGroupPayload,
+    AssignProfilesToDataSourceGroupResult, ChooseFilePayload, CompareDetailPageRequest,
     CompareDetailPageResponse, CompareHistoryInput, CompareHistoryItem,
     CompareTableDiscoveryRequest, CompareTableDiscoveryResponse, CompareTaskCancelResponse,
     CompareTaskProgressResponse, CompareTaskResultResponse, CompareTaskStartResponse,
@@ -77,6 +78,17 @@ pub fn delete_data_source_group(
     state
         .local_store
         .delete_data_source_group(&group_id)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn assign_profiles_to_data_source_group(
+    state: State<'_, AppState>,
+    payload: AssignProfilesToDataSourceGroupPayload,
+) -> Result<AssignProfilesToDataSourceGroupResult, String> {
+    state
+        .local_store
+        .assign_profiles_to_data_source_group(&payload.group_id, payload.profile_ids)
         .map_err(to_error_message)
 }
 

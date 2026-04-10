@@ -19,6 +19,7 @@ type SqlEditorProps = {
   value: string
   placeholder: string
   onChange: (value: string) => void
+  onSubmit?: () => void
   database_name?: string | null
   table_name?: string | null
   table_columns?: TableDataColumn[]
@@ -168,6 +169,7 @@ export function SqlEditor({
   value,
   placeholder,
   onChange,
+  onSubmit,
   database_name,
   table_name,
   table_columns,
@@ -180,12 +182,17 @@ export function SqlEditor({
   const [focused, setFocused] = useState(false)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const executeRef = useRef(onExecute)
+  const submitRef = useRef(onSubmit)
   const modelPath = buildModelPath(editor_id, mode)
   const isConsole = mode === 'console'
 
   useEffect(() => {
     executeRef.current = onExecute
   }, [onExecute])
+
+  useEffect(() => {
+    submitRef.current = onSubmit
+  }, [onSubmit])
 
   useEffect(() => {
     sqlEditorContexts.set(
@@ -244,6 +251,17 @@ export function SqlEditor({
               label: '执行 SQL',
               run: () => {
                 executeRef.current?.()
+                return undefined
+              },
+            })
+          } else {
+            editor.addAction({
+              id: `submit-inline-sql:${modelPath}`,
+              keybindings: [monacoApi.KeyCode.Enter],
+              label: '提交条件',
+              precondition: '!suggestWidgetVisible',
+              run: () => {
+                submitRef.current?.()
                 return undefined
               },
             })

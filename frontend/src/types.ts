@@ -61,6 +61,17 @@ export type DeleteDataSourceGroupResult = {
   affected_profile_count: number
 }
 
+export type AssignProfilesToDataSourceGroupPayload = {
+  group_id: string
+  profile_ids: string[]
+}
+
+export type AssignProfilesToDataSourceGroupResult = {
+  group_id: string
+  group_name: string
+  affected_profile_count: number
+}
+
 export type ConnectionTestResult = {
   server_version: string
   current_database: string | null

@@ -1,8 +1,8 @@
 use crate::models::{
-    CompareHistoryInput, CompareHistoryItem, CompareHistoryType, ConnectionProfile,
-    DataSourceGroup, DeleteDataSourceGroupResult, ImportConnectionProfilesResult,
-    ImportedConnectionProfileItem, RenameDataSourceGroupResult, SaveConnectionProfilePayload,
-    SkippedImportItem,
+    AssignProfilesToDataSourceGroupResult, CompareHistoryInput, CompareHistoryItem,
+    CompareHistoryType, ConnectionProfile, DataSourceGroup, DeleteDataSourceGroupResult,
+    ImportConnectionProfilesResult, ImportedConnectionProfileItem, RenameDataSourceGroupResult,
+    SaveConnectionProfilePayload, SkippedImportItem,
 };
 use crate::navicat::NavicatConnectionCandidate;
 use anyhow::{Context, Result, ensure};
@@ -417,6 +417,43 @@ impl LocalStore {
         Ok(DeleteDataSourceGroupResult {
             group_id: group_id.to_string(),
             group_name,
+            affected_profile_count,
+        })
+    }
+
+    pub fn assign_profiles_to_data_source_group(
+        &self,
+        group_id: &str,
+        profile_ids: Vec<String>,
+    ) -> Result<AssignProfilesToDataSourceGroupResult> {
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction()?;
+        let target_group = load_data_source_group(&transaction, group_id)?;
+        let now = Utc::now().to_rfc3339();
+        let profile_ids = profile_ids
+            .into_iter()
+            .map(|item| item.trim().to_string())
+            .filter(|item| !item.is_empty())
+            .collect::<HashSet<_>>();
+
+        // 批量调整数据源归组时放在同一事务中，避免部分成功导致树结构和列表不一致。
+        let mut affected_profile_count = 0_u64;
+        for profile_id in profile_ids {
+            affected_profile_count += transaction.execute(
+                "
+                UPDATE connection_profiles
+                SET group_name = ?, updated_at = ?
+                WHERE id = ?
+                ",
+                params![target_group.group_name.as_str(), now.as_str(), profile_id],
+            )? as u64;
+        }
+
+        transaction.commit()?;
+
+        Ok(AssignProfilesToDataSourceGroupResult {
+            group_id: target_group.id,
+            group_name: target_group.group_name,
             affected_profile_count,
         })
     }

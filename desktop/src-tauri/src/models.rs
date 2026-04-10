@@ -82,6 +82,21 @@ pub struct DeleteDataSourceGroupResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct AssignProfilesToDataSourceGroupPayload {
+    pub group_id: String,
+    pub profile_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AssignProfilesToDataSourceGroupResult {
+    pub group_id: String,
+    pub group_name: String,
+    pub affected_profile_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct DatabaseEntry {
     pub name: String,
     pub table_count: u64,

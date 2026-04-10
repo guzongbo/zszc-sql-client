@@ -1,6 +1,6 @@
 import type { CellValue } from '../../types'
+import { SqlEditor } from '../../SqlEditor'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
-import { InlineSqlInput } from '../../shared/components/InlineSqlInput'
 import { formatTotalRowsLabel } from '../../shared/utils/pagination'
 import type { DataTab } from '../workspace/types'
 import { DataGridTable } from './DataGridTable'
@@ -121,9 +121,14 @@ export function DataEditorView({
         <div className="inline-query-bar">
           <label className="inline-query-field">
             <span>WHERE</span>
-            <InlineSqlInput
+            <SqlEditor
+              editor_id={`${tab.id}:where_clause`}
+              mode="where"
               placeholder="例如 id > 100 AND status = 'ready'"
               value={tab.data.where_clause}
+              database_name={tab.database_name}
+              table_name={tab.table_name}
+              table_columns={tab.data.columns}
               onChange={(value) => onQueryFieldChange(tab.id, 'where_clause', value)}
               onSubmit={onApplyFilter}
             />
@@ -131,9 +136,14 @@ export function DataEditorView({
 
           <label className="inline-query-field">
             <span>ORDER BY</span>
-            <InlineSqlInput
+            <SqlEditor
+              editor_id={`${tab.id}:order_by_clause`}
+              mode="order_by"
               placeholder="例如 created_at DESC, id ASC"
               value={tab.data.order_by_clause}
+              database_name={tab.database_name}
+              table_name={tab.table_name}
+              table_columns={tab.data.columns}
               onChange={(value) => onQueryFieldChange(tab.id, 'order_by_clause', value)}
               onSubmit={onApplyFilter}
             />

@@ -108,6 +108,7 @@ fn main() {
             commands::create_data_source_group,
             commands::rename_data_source_group,
             commands::delete_data_source_group,
+            commands::assign_profiles_to_data_source_group,
             commands::save_connection_profile,
             commands::import_navicat_connection_profiles,
             commands::delete_connection_profile,

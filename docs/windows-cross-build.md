@@ -19,6 +19,18 @@ npm --prefix desktop run build:win-x64-nsis
 该脚本实际展开为：
 
 ```bash
+tauri build --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
+```
+
+如需在 macOS 上交叉构建，执行：
+
+```bash
+npm --prefix desktop run build:win-x64-nsis:cross
+```
+
+该脚本实际展开为：
+
+```bash
 PATH="$(brew --prefix lld)/bin:$(brew --prefix llvm)/bin:$PATH" \
 tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json
 ```

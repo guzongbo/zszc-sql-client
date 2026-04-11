@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
 concurrency:
   group: plugins-package-${{ github.ref }}
   cancel-in-progress: true
@@ -33,10 +38,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-msvc
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: package-plugins-${{ runner.os }}
+          cache-workspace-crates: "true"
           workspaces: |
             plugins/password-util-plugin/backend -> target
             plugins/mock-id-generator-plugin/backend -> target

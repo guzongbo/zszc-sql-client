@@ -12,6 +12,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
@@ -47,10 +52,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ runner.os }}-desktop
+          cache-workspace-crates: "true"
           workspaces: |
             . -> target
 
@@ -102,10 +111,14 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-${{ runner.os }}-${{ matrix.plugin_name }}
+          cache-workspace-crates: "true"
           workspaces: |
             ${{ matrix.plugin_dir }}/backend -> target
 

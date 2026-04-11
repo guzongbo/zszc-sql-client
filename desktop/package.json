@@ -9,7 +9,8 @@
     "build:dir": "tauri build --no-bundle --config src-tauri/tauri.conf.json",
     "build:mac-arm64-dmg": "tauri build --bundles dmg --target aarch64-apple-darwin --config src-tauri/tauri.conf.json",
     "build:mac-x64-dmg": "tauri build --bundles dmg --target x86_64-apple-darwin --config src-tauri/tauri.conf.json",
-    "build:win-x64-nsis": "PATH=\"$(brew --prefix lld)/bin:$(brew --prefix llvm)/bin:$PATH\" tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json"
+    "build:win-x64-nsis": "tauri build --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json",
+    "build:win-x64-nsis:cross": "PATH=\"$(brew --prefix lld)/bin:$(brew --prefix llvm)/bin:$PATH\" tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --config src-tauri/tauri.windows.conf.json"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.10.1"

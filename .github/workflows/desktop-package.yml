@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+env:
+  CARGO_INCREMENTAL: 0
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: sccache
+
 concurrency:
   group: desktop-package-${{ github.ref }}
   cancel-in-progress: true
@@ -31,10 +36,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: package-macos-aarch64
+          cache-workspace-crates: "true"
           workspaces: |
             . -> target
 
@@ -80,10 +89,14 @@ jobs:
         with:
           targets: x86_64-apple-darwin
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: package-macos-x64
+          cache-workspace-crates: "true"
           workspaces: |
             . -> target
 
@@ -129,10 +142,14 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
           shared-key: package-windows-x64
+          cache-workspace-crates: "true"
           workspaces: |
             . -> target
 
@@ -155,10 +172,19 @@ jobs:
         shell: pwsh
         run: npm --prefix desktop run build:win-x64-nsis
 
+      - name: Inspect Windows bundle output
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path target -Recurse -Filter *.exe |
+            Where-Object { $_.FullName -match 'bundle\\nsis' } |
+            Select-Object -ExpandProperty FullName
+
       - name: Upload Windows x64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: zszc-sql-client-win-x64-nsis
-          path: target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+          path: |
+            target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.exe
           if-no-files-found: error
           retention-days: 7

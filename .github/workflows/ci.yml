@@ -71,3 +71,52 @@ jobs:
 
       - name: Lint desktop
         run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings
+
+  plugin-check:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - plugin_name: password-util-plugin
+            plugin_dir: plugins/password-util-plugin
+            frontend_dir: plugins/password-util-plugin/frontend
+            backend_manifest: plugins/password-util-plugin/backend/Cargo.toml
+          - plugin_name: mock-id-generator-plugin
+            plugin_dir: plugins/mock-id-generator-plugin
+            frontend_dir: plugins/mock-id-generator-plugin/frontend
+            backend_manifest: plugins/mock-id-generator-plugin/backend/Cargo.toml
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: |
+            ${{ matrix.plugin_dir }}/package-lock.json
+            ${{ matrix.frontend_dir }}/package-lock.json
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}-${{ matrix.plugin_name }}
+          workspaces: |
+            ${{ matrix.plugin_dir }}/backend -> target
+
+      - name: Install plugin packaging dependencies
+        run: npm ci --prefix ${{ matrix.plugin_dir }}
+
+      - name: Install plugin frontend dependencies
+        run: npm ci --prefix ${{ matrix.frontend_dir }}
+
+      - name: Build plugin frontend
+        run: npm --prefix ${{ matrix.frontend_dir }} run build
+
+      - name: Test plugin backend
+        run: cargo test --manifest-path ${{ matrix.backend_manifest }} --locked

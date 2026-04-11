@@ -31,3 +31,33 @@ npm run package
 1. 构建插件前端
 2. 构建当前平台的 Rust 后端
 3. 生成 `dist/mock-id-generator-plugin.zszc-plugin`
+
+## 多平台打包
+
+可直接使用以下脚本：
+
+```bash
+npm run package:mac-apple
+npm run package:mac-intel
+npm run package:windows
+npm run package:all
+```
+
+其中 `package:all` 会把 `mac Apple`、`mac Intel`、`Windows x64` 三个平台后端一起打进同一个插件包。
+
+如果你已有旧流程，也可以继续通过环境变量指定：
+
+```bash
+PLUGIN_BUILD_TARGETS=darwin-aarch64,darwin-x86_64,windows-x86_64 npm run package
+```
+
+## 交叉编译说明
+
+- macOS 打 `mac Intel`：先执行 `rustup target add x86_64-apple-darwin`
+- macOS 打 `Windows`：先执行 `rustup target add x86_64-pc-windows-msvc`
+- 非 Windows 主机打 `Windows`：额外需要 `cargo install --locked cargo-xwin`
+- 在仓库根目录可统一打全部插件：
+
+```bash
+npm run package:plugins:all
+```

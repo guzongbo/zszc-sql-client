@@ -6,6 +6,11 @@
     "dev:web": "npm --prefix frontend run dev",
     "build:web": "npm --prefix frontend run build",
     "dev:desktop": "npm --prefix desktop run dev",
-    "build:desktop": "npm --prefix desktop run build"
+    "build:desktop": "npm --prefix desktop run build",
+    "package:plugins": "node scripts/package-plugins.mjs host",
+    "package:plugins:mac-apple": "node scripts/package-plugins.mjs mac-apple",
+    "package:plugins:mac-intel": "node scripts/package-plugins.mjs mac-intel",
+    "package:plugins:windows": "node scripts/package-plugins.mjs windows",
+    "package:plugins:all": "node scripts/package-plugins.mjs all"
   }
 }

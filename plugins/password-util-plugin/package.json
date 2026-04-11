@@ -3,7 +3,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "package": "node package-plugin.mjs"
+    "package": "node package-plugin.mjs",
+    "package:mac-apple": "node package-plugin.mjs --target mac-apple",
+    "package:mac-intel": "node package-plugin.mjs --target mac-intel",
+    "package:windows": "node package-plugin.mjs --target windows",
+    "package:all": "node package-plugin.mjs --target all"
   },
   "devDependencies": {
     "fflate": "^0.8.2"

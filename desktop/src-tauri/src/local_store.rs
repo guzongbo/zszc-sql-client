@@ -1,8 +1,9 @@
 use crate::models::{
     AssignProfilesToDataSourceGroupResult, CompareHistoryInput, CompareHistoryItem,
-    CompareHistoryType, ConnectionProfile, DataSourceGroup, DeleteDataSourceGroupResult,
-    ImportConnectionProfilesResult, ImportedConnectionProfileItem, RenameDataSourceGroupResult,
-    SaveConnectionProfilePayload, SkippedImportItem,
+    CompareHistoryPerformance, CompareHistorySummary, CompareHistoryType, ConnectionProfile,
+    DataSourceGroup, DeleteDataSourceGroupResult, ImportConnectionProfilesResult,
+    ImportedConnectionProfileItem, RedisConnectionProfile, RenameDataSourceGroupResult,
+    SaveConnectionProfilePayload, SaveRedisConnectionPayload, SkippedImportItem,
 };
 use crate::navicat::NavicatConnectionCandidate;
 use anyhow::{Context, Result, ensure};
@@ -95,6 +96,140 @@ impl LocalStore {
             .context("读取数据源分组失败")
     }
 
+    pub fn list_redis_connection_profiles(&self) -> Result<Vec<RedisConnectionProfile>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                id,
+                group_name,
+                connection_name,
+                host,
+                port,
+                username,
+                password,
+                database_index,
+                connect_timeout_ms,
+                created_at,
+                updated_at
+            FROM redis_connection_profiles
+            ORDER BY COALESCE(group_name, ''), connection_name, created_at
+            ",
+        )?;
+
+        let rows = statement.query_map([], map_redis_connection_profile_row)?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("读取 Redis 连接配置失败")
+    }
+
+    pub fn load_redis_connection_profile(
+        &self,
+        profile_id: &str,
+    ) -> Result<RedisConnectionProfile> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "
+                SELECT
+                    id,
+                    group_name,
+                    connection_name,
+                    host,
+                    port,
+                    username,
+                    password,
+                    database_index,
+                    connect_timeout_ms,
+                    created_at,
+                    updated_at
+                FROM redis_connection_profiles
+                WHERE id = ?
+                ",
+                [profile_id],
+                map_redis_connection_profile_row,
+            )
+            .context("Redis 连接配置不存在")
+    }
+
+    pub fn save_redis_connection_profile(
+        &self,
+        payload: SaveRedisConnectionPayload,
+    ) -> Result<RedisConnectionProfile> {
+        validate_redis_payload(&payload)?;
+
+        let profile_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let now = Utc::now().to_rfc3339();
+        let existing = self.load_redis_connection_profile(&profile_id).ok();
+        let created_at = existing
+            .as_ref()
+            .map(|profile| profile.created_at.clone())
+            .unwrap_or_else(|| now.clone());
+        let password = if payload.password.is_empty() {
+            existing
+                .as_ref()
+                .map(|profile| profile.password.clone())
+                .unwrap_or_default()
+        } else {
+            payload.password
+        };
+        let group_name = normalize_optional(payload.group_name);
+
+        let connection = self.open_connection()?;
+        ensure_data_source_group(&connection, group_name.as_deref())?;
+        connection.execute(
+            "
+            INSERT INTO redis_connection_profiles (
+                id,
+                group_name,
+                connection_name,
+                host,
+                port,
+                username,
+                password,
+                database_index,
+                connect_timeout_ms,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                group_name = excluded.group_name,
+                connection_name = excluded.connection_name,
+                host = excluded.host,
+                port = excluded.port,
+                username = excluded.username,
+                password = excluded.password,
+                database_index = excluded.database_index,
+                connect_timeout_ms = excluded.connect_timeout_ms,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                profile_id,
+                group_name,
+                payload.connection_name.trim(),
+                payload.host.trim(),
+                payload.port,
+                payload.username.trim(),
+                password,
+                payload.database_index,
+                payload.connect_timeout_ms as i64,
+                created_at,
+                now,
+            ],
+        )?;
+
+        self.load_redis_connection_profile(&profile_id)
+    }
+
+    pub fn delete_redis_connection_profile(&self, profile_id: &str) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "DELETE FROM redis_connection_profiles WHERE id = ?",
+            [profile_id],
+        )?;
+        Ok(())
+    }
+
     pub fn load_connection_profile(&self, profile_id: &str) -> Result<ConnectionProfile> {
         let connection = self.open_connection()?;
         let mut statement = connection.prepare(
@@ -135,15 +270,26 @@ impl LocalStore {
         &self,
         payload: SaveConnectionProfilePayload,
     ) -> Result<ConnectionProfile> {
-        validate_payload(&payload)?;
-
+        let existing = payload
+            .id
+            .as_deref()
+            .and_then(|profile_id| self.load_connection_profile(profile_id).ok());
+        let password = if payload.password.is_empty() {
+            existing
+                .as_ref()
+                .map(|profile| profile.password.clone())
+                .unwrap_or_default()
+        } else {
+            payload.password.clone()
+        };
+        validate_payload(&payload, &password)?;
         let profile_id = payload.id.unwrap_or_else(|| Uuid::new_v4().to_string());
         let now = Utc::now().to_rfc3339();
         let group_name = normalize_optional(payload.group_name);
-        let created_at = self
-            .load_connection_profile(&profile_id)
-            .map(|profile| profile.created_at)
-            .unwrap_or_else(|_| now.clone());
+        let created_at = existing
+            .as_ref()
+            .map(|profile| profile.created_at.clone())
+            .unwrap_or_else(|| now.clone());
 
         let connection = self.open_connection()?;
         ensure_data_source_group(&connection, group_name.as_deref())?;
@@ -176,7 +322,7 @@ impl LocalStore {
                 payload.host.trim(),
                 payload.port,
                 payload.username.trim(),
-                payload.password,
+                password,
                 created_at,
                 now,
             ],
@@ -355,7 +501,7 @@ impl LocalStore {
             0
         } else {
             // 分组重命名时同步刷新所有关联数据源，保持树结构与下拉选项一致。
-            transaction.execute(
+            let mysql_affected_count = transaction.execute(
                 "
                 UPDATE connection_profiles
                 SET group_name = ?, updated_at = ?
@@ -366,7 +512,22 @@ impl LocalStore {
                     now.as_str(),
                     previous_group_name.as_str()
                 ],
-            )? as u64
+            )? as u64;
+
+            let redis_affected_count = transaction.execute(
+                "
+                UPDATE redis_connection_profiles
+                SET group_name = ?, updated_at = ?
+                WHERE group_name = ?
+                ",
+                params![
+                    normalized_name.as_str(),
+                    now.as_str(),
+                    previous_group_name.as_str()
+                ],
+            )? as u64;
+
+            mysql_affected_count + redis_affected_count
         };
 
         transaction.execute(
@@ -396,9 +557,18 @@ impl LocalStore {
         let now = Utc::now().to_rfc3339();
 
         // 删除分组后，原有数据源自动回落到未分组，避免引用悬空分组名。
-        let affected_profile_count = transaction.execute(
+        let mysql_affected_count = transaction.execute(
             "
             UPDATE connection_profiles
+            SET group_name = NULL, updated_at = ?
+            WHERE group_name = ?
+            ",
+            params![now.as_str(), group_name.as_str()],
+        )? as u64;
+
+        let redis_affected_count = transaction.execute(
+            "
+            UPDATE redis_connection_profiles
             SET group_name = NULL, updated_at = ?
             WHERE group_name = ?
             ",
@@ -417,7 +587,7 @@ impl LocalStore {
         Ok(DeleteDataSourceGroupResult {
             group_id: group_id.to_string(),
             group_name,
-            affected_profile_count,
+            affected_profile_count: mysql_affected_count + redis_affected_count,
         })
     }
 
@@ -464,7 +634,10 @@ impl LocalStore {
         Ok(())
     }
 
-    pub fn list_compare_history(&self, limit: usize) -> Result<Vec<CompareHistoryItem>> {
+    pub fn list_compare_history_summaries(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<CompareHistorySummary>> {
         let connection = self.open_connection()?;
         let safe_limit = limit.clamp(1, 500) as i64;
         let mut statement = connection.prepare(
@@ -479,9 +652,6 @@ impl LocalStore {
                 target_data_source_name,
                 target_database,
                 table_mode,
-                selected_tables_json,
-                table_detail_json,
-                performance_json,
                 source_table_count,
                 target_table_count,
                 total_tables,
@@ -492,16 +662,59 @@ impl LocalStore {
                 structure_added_count,
                 structure_modified_count,
                 structure_deleted_count,
+                total_elapsed_ms,
                 created_at
             FROM compare_history
             ORDER BY created_at DESC, id DESC
             LIMIT ?
             ",
         )?;
-        let rows = statement.query_map([safe_limit], map_compare_history_row)?;
+        let rows = statement.query_map([safe_limit], map_compare_history_summary_row)?;
 
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("读取对比记录失败")
+    }
+
+    pub fn load_compare_history_detail(
+        &self,
+        history_id: i64,
+    ) -> Result<Option<CompareHistoryItem>> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "
+                SELECT
+                    id,
+                    history_type,
+                    source_profile_id,
+                    source_data_source_name,
+                    source_database,
+                    target_profile_id,
+                    target_data_source_name,
+                    target_database,
+                    table_mode,
+                    selected_tables_json,
+                    table_detail_json,
+                    performance_json,
+                    source_table_count,
+                    target_table_count,
+                    total_tables,
+                    compared_tables,
+                    insert_count,
+                    update_count,
+                    delete_count,
+                    structure_added_count,
+                    structure_modified_count,
+                    structure_deleted_count,
+                    created_at
+                FROM compare_history
+                WHERE id = ?
+                ",
+                [history_id],
+                map_compare_history_row,
+            )
+            .optional()
+            .context("读取对比记录详情失败")
     }
 
     pub fn append_compare_history(&self, input: CompareHistoryInput) -> Result<CompareHistoryItem> {
@@ -535,8 +748,9 @@ impl LocalStore {
                 structure_added_count,
                 structure_modified_count,
                 structure_deleted_count,
+                total_elapsed_ms,
                 created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
             params![
                 input.history_type.as_str(),
@@ -560,6 +774,7 @@ impl LocalStore {
                 input.structure_added_count as i64,
                 input.structure_modified_count as i64,
                 input.structure_deleted_count as i64,
+                input.performance.total_elapsed_ms as i64,
                 created_at,
             ],
         )?;
@@ -629,6 +844,8 @@ impl LocalStore {
         )?;
 
         self.migrate_connection_profiles(&connection)?;
+        self.migrate_redis_connection_profiles(&connection)?;
+        // 分组表依赖连接表里的 group_name，必须在各连接表迁移完成后再做回填。
         self.migrate_data_source_groups(&connection)?;
         self.migrate_compare_history(&connection)?;
         Ok(())
@@ -787,6 +1004,121 @@ impl LocalStore {
             ensure_data_source_group(connection, Some(group_name.as_str()))?;
         }
 
+        if table_exists(connection, "redis_connection_profiles")?
+            && load_table_columns(connection, "redis_connection_profiles")?.contains("group_name")
+        {
+            let mut redis_statement = connection.prepare(
+                "
+                SELECT DISTINCT TRIM(group_name)
+                FROM redis_connection_profiles
+                WHERE NULLIF(TRIM(group_name), '') IS NOT NULL
+                ORDER BY TRIM(group_name)
+                ",
+            )?;
+            let redis_group_names = redis_statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+
+            for group_name in redis_group_names {
+                ensure_data_source_group(connection, Some(group_name.as_str()))?;
+            }
+        }
+
+        Ok(())
+    }
+
+    fn migrate_redis_connection_profiles(&self, connection: &Connection) -> Result<()> {
+        if !table_exists(connection, "redis_connection_profiles")? {
+            connection.execute_batch(
+                "
+                CREATE TABLE redis_connection_profiles (
+                    id TEXT PRIMARY KEY,
+                    group_name TEXT,
+                    connection_name TEXT NOT NULL,
+                    host TEXT NOT NULL,
+                    port INTEGER NOT NULL,
+                    username TEXT NOT NULL,
+                    password TEXT NOT NULL,
+                    database_index INTEGER NOT NULL,
+                    connect_timeout_ms INTEGER NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX idx_redis_connection_profiles_group_name
+                    ON redis_connection_profiles(group_name, connection_name);
+                ",
+            )?;
+            return Ok(());
+        }
+
+        let columns = load_table_columns(connection, "redis_connection_profiles")?;
+        if columns.contains("group_name") {
+            connection.execute_batch(
+                "
+                CREATE INDEX IF NOT EXISTS idx_redis_connection_profiles_group_name
+                    ON redis_connection_profiles(group_name, connection_name);
+                ",
+            )?;
+            return Ok(());
+        }
+
+        connection.execute_batch(
+            "
+            DROP TABLE IF EXISTS redis_connection_profiles_next;
+
+            CREATE TABLE redis_connection_profiles_next (
+                id TEXT PRIMARY KEY,
+                group_name TEXT,
+                connection_name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                database_index INTEGER NOT NULL,
+                connect_timeout_ms INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            ",
+        )?;
+
+        connection.execute_batch(
+            "
+            INSERT INTO redis_connection_profiles_next (
+                id,
+                group_name,
+                connection_name,
+                host,
+                port,
+                username,
+                password,
+                database_index,
+                connect_timeout_ms,
+                created_at,
+                updated_at
+            )
+            SELECT
+                id,
+                NULL,
+                connection_name,
+                host,
+                port,
+                username,
+                password,
+                database_index,
+                connect_timeout_ms,
+                created_at,
+                updated_at
+            FROM redis_connection_profiles;
+
+            DROP TABLE redis_connection_profiles;
+            ALTER TABLE redis_connection_profiles_next RENAME TO redis_connection_profiles;
+            CREATE INDEX idx_redis_connection_profiles_group_name
+                ON redis_connection_profiles(group_name, connection_name);
+            ",
+        )?;
+
         Ok(())
     }
 
@@ -813,14 +1145,53 @@ impl LocalStore {
                 insert_count INTEGER NOT NULL,
                 update_count INTEGER NOT NULL,
                 delete_count INTEGER NOT NULL,
-                structure_added_count INTEGER NOT NULL,
-                structure_modified_count INTEGER NOT NULL,
-                structure_deleted_count INTEGER NOT NULL,
-                created_at TEXT NOT NULL
-            );
+                        structure_added_count INTEGER NOT NULL,
+                        structure_modified_count INTEGER NOT NULL,
+                        structure_deleted_count INTEGER NOT NULL,
+                        total_elapsed_ms INTEGER NOT NULL DEFAULT 0,
+                        created_at TEXT NOT NULL
+                    );
 
+                    CREATE INDEX IF NOT EXISTS idx_compare_history_created_at
+                        ON compare_history(created_at DESC);
+                    CREATE INDEX IF NOT EXISTS idx_compare_history_type_created_at
+                        ON compare_history(history_type, created_at DESC);
+                ",
+        )?;
+
+        let columns = load_table_columns(connection, "compare_history")?;
+        if !columns.contains("total_elapsed_ms") {
+            connection.execute(
+                "ALTER TABLE compare_history ADD COLUMN total_elapsed_ms INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+
+            let mut statement = connection.prepare(
+                "
+                SELECT id, performance_json
+                FROM compare_history
+                ",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })?;
+
+            for row in rows {
+                let (history_id, performance_json) = row?;
+                let performance: CompareHistoryPerformance = parse_json_value(&performance_json);
+                connection.execute(
+                    "UPDATE compare_history SET total_elapsed_ms = ? WHERE id = ?",
+                    params![performance.total_elapsed_ms as i64, history_id],
+                )?;
+            }
+        }
+
+        connection.execute_batch(
+            "
             CREATE INDEX IF NOT EXISTS idx_compare_history_created_at
                 ON compare_history(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_compare_history_type_created_at
+                ON compare_history(history_type, created_at DESC);
             ",
         )?;
 
@@ -978,14 +1349,50 @@ fn ensure_data_source_group(connection: &Connection, group_name: Option<&str>) -
     Ok(())
 }
 
-fn validate_payload(payload: &SaveConnectionProfilePayload) -> Result<()> {
+fn map_redis_connection_profile_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<RedisConnectionProfile> {
+    Ok(RedisConnectionProfile {
+        id: row.get(0)?,
+        group_name: row.get(1)?,
+        connection_name: row.get(2)?,
+        host: row.get(3)?,
+        port: row.get::<_, i64>(4)? as u16,
+        username: row.get(5)?,
+        password: row.get(6)?,
+        database_index: row.get::<_, i64>(7)? as u16,
+        connect_timeout_ms: row.get::<_, i64>(8)? as u64,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
+    })
+}
+
+fn validate_redis_payload(payload: &SaveRedisConnectionPayload) -> Result<()> {
+    ensure!(
+        !payload.connection_name.trim().is_empty(),
+        "Redis 连接名称不能为空"
+    );
+    ensure!(!payload.host.trim().is_empty(), "Redis 主机不能为空");
+    ensure!(payload.port > 0, "Redis 端口必须大于 0");
+    ensure!(
+        payload.database_index <= 255,
+        "Redis DB 编号必须在 0 到 255 之间"
+    );
+    ensure!(
+        (100..=120_000).contains(&payload.connect_timeout_ms),
+        "Redis 连接超时必须在 100 到 120000 毫秒之间"
+    );
+    Ok(())
+}
+
+fn validate_payload(payload: &SaveConnectionProfilePayload, password: &str) -> Result<()> {
     ensure!(
         !payload.data_source_name.trim().is_empty(),
         "数据源名称不能为空"
     );
     ensure!(!payload.host.trim().is_empty(), "主机不能为空");
     ensure!(!payload.username.trim().is_empty(), "用户名不能为空");
-    ensure!(!payload.password.is_empty(), "密码不能为空");
+    ensure!(!password.is_empty(), "密码不能为空");
     ensure!(payload.port > 0, "端口必须大于 0");
     Ok(())
 }
@@ -1050,6 +1457,34 @@ fn map_compare_history_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<CompareH
     })
 }
 
+fn map_compare_history_summary_row(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<CompareHistorySummary> {
+    Ok(CompareHistorySummary {
+        id: row.get(0)?,
+        history_type: normalize_history_type(&row.get::<_, String>(1)?),
+        source_profile_id: row.get(2)?,
+        source_data_source_name: row.get(3)?,
+        source_database: row.get(4)?,
+        target_profile_id: row.get(5)?,
+        target_data_source_name: row.get(6)?,
+        target_database: row.get(7)?,
+        table_mode: row.get(8)?,
+        source_table_count: row.get::<_, i64>(9)? as usize,
+        target_table_count: row.get::<_, i64>(10)? as usize,
+        total_tables: row.get::<_, i64>(11)? as usize,
+        compared_tables: row.get::<_, i64>(12)? as usize,
+        insert_count: row.get::<_, i64>(13)? as usize,
+        update_count: row.get::<_, i64>(14)? as usize,
+        delete_count: row.get::<_, i64>(15)? as usize,
+        structure_added_count: row.get::<_, i64>(16)? as usize,
+        structure_modified_count: row.get::<_, i64>(17)? as usize,
+        structure_deleted_count: row.get::<_, i64>(18)? as usize,
+        total_elapsed_ms: row.get::<_, i64>(19)?.max(0) as u64,
+        created_at: row.get(20)?,
+    })
+}
+
 fn normalize_history_type(value: &str) -> CompareHistoryType {
     if value == CompareHistoryType::Structure.as_str() {
         CompareHistoryType::Structure
@@ -1063,4 +1498,109 @@ where
     T: serde::de::DeserializeOwned + Default,
 {
     serde_json::from_str(raw).unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalStore, load_table_columns};
+    use anyhow::Result;
+    use rusqlite::Connection;
+    use std::fs;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    struct TestDir {
+        path: PathBuf,
+    }
+
+    impl TestDir {
+        fn new() -> Result<Self> {
+            let path = std::env::temp_dir().join(format!(
+                "zszc-sql-client-local-store-test-{}",
+                Uuid::new_v4()
+            ));
+            fs::create_dir_all(&path)?;
+            Ok(Self { path })
+        }
+
+        fn database_path(&self) -> PathBuf {
+            self.path.join("local_store.db")
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
+
+    #[test]
+    fn initialize_migrates_legacy_redis_profiles_before_syncing_groups() -> Result<()> {
+        let test_dir = TestDir::new()?;
+        let database_path = test_dir.database_path();
+        let connection = Connection::open(&database_path)?;
+
+        connection.execute_batch(
+            "
+            CREATE TABLE redis_connection_profiles (
+                id TEXT PRIMARY KEY,
+                connection_name TEXT NOT NULL,
+                host TEXT NOT NULL,
+                port INTEGER NOT NULL,
+                username TEXT NOT NULL,
+                password TEXT NOT NULL,
+                database_index INTEGER NOT NULL,
+                connect_timeout_ms INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE INDEX idx_redis_connection_profiles_name
+                ON redis_connection_profiles(connection_name);
+
+            INSERT INTO redis_connection_profiles (
+                id,
+                connection_name,
+                host,
+                port,
+                username,
+                password,
+                database_index,
+                connect_timeout_ms,
+                created_at,
+                updated_at
+            )
+            VALUES (
+                'redis-profile-1',
+                '开发 Redis',
+                '127.0.0.1',
+                6379,
+                'default',
+                'secret',
+                0,
+                5000,
+                '2026-04-11T10:00:00Z',
+                '2026-04-11T10:00:00Z'
+            );
+            ",
+        )?;
+
+        drop(connection);
+
+        let store = LocalStore::new(&database_path)?;
+        let connection = Connection::open(&database_path)?;
+        let columns = load_table_columns(&connection, "redis_connection_profiles")?;
+
+        assert!(columns.contains("group_name"));
+
+        let redis_profiles = store.list_redis_connection_profiles()?;
+        assert_eq!(redis_profiles.len(), 1);
+        assert_eq!(redis_profiles[0].connection_name, "开发 Redis");
+        assert_eq!(redis_profiles[0].group_name, None);
+
+        let groups = store.list_data_source_groups()?;
+        assert!(groups.is_empty());
+
+        Ok(())
+    }
 }

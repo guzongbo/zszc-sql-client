@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CompareHistoryItem, ConnectionProfile, DatabaseEntry } from '../../types'
+import type { CompareHistorySummary, ConnectionProfile, DatabaseEntry } from '../../types'
 import type { CompareFormState } from './types'
 
 type CompareSelectionOption = {
@@ -13,7 +13,7 @@ type CompareSelectionOption = {
 type CompareConnectionFormProps = {
   compareForm: CompareFormState
   profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
+  compareHistoryItems: CompareHistorySummary[]
   databasesByProfile: Record<string, DatabaseEntry[]>
   nodeLoading: Record<string, boolean>
   profileConnectionState: Record<string, 'idle' | 'connected' | 'error'>
@@ -41,7 +41,7 @@ function compareGroupName(left: string, right: string) {
 
 function getProfileCompareUsageCount(
   profileId: string,
-  compareHistoryItems: CompareHistoryItem[],
+  compareHistoryItems: CompareHistorySummary[],
 ) {
   return compareHistoryItems.reduce((count, item) => {
     const sourceHit = item.source_profile_id === profileId ? 1 : 0
@@ -53,7 +53,7 @@ function getProfileCompareUsageCount(
 function getDatabaseCompareUsageCount(
   profileId: string,
   databaseName: string,
-  compareHistoryItems: CompareHistoryItem[],
+  compareHistoryItems: CompareHistorySummary[],
 ) {
   return compareHistoryItems.reduce((count, item) => {
     const sourceHit =
@@ -75,7 +75,7 @@ function matchCompareFormSearch(searchTexts: string[], query: string) {
 
 function sortCompareProfilesForSelection(
   profiles: ConnectionProfile[],
-  compareHistoryItems: CompareHistoryItem[],
+  compareHistoryItems: CompareHistorySummary[],
 ) {
   return [...profiles].sort((left, right) => {
     const usageDelta =
@@ -100,7 +100,7 @@ function sortCompareProfilesForSelection(
 function sortCompareDatabasesForSelection(
   profileId: string,
   databases: DatabaseEntry[],
-  compareHistoryItems: CompareHistoryItem[],
+  compareHistoryItems: CompareHistorySummary[],
 ) {
   return [...databases].sort((left, right) => {
     const usageDelta =
@@ -136,27 +136,34 @@ function CompareSelectionDropdown({
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const shellRef = useRef<HTMLDivElement | null>(null)
+  const panelOpen = open && !disabled
 
   const selectedOption = options.find((option) => option.value === value) ?? null
   const filteredOptions = options.filter((option) =>
     matchCompareFormSearch(option.search_texts, query),
   )
 
+  function closeDropdown() {
+    setOpen(false)
+    setQuery('')
+  }
+
   useEffect(() => {
-    if (!open) {
-      setQuery('')
+    if (!panelOpen) {
       return
     }
 
     const handlePointerDown = (event: MouseEvent) => {
       if (shellRef.current && !shellRef.current.contains(event.target as Node)) {
         setOpen(false)
+        setQuery('')
       }
     }
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
         setOpen(false)
+        setQuery('')
       }
     }
 
@@ -167,20 +174,14 @@ function CompareSelectionDropdown({
       window.removeEventListener('mousedown', handlePointerDown)
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [open])
-
-  useEffect(() => {
-    if (disabled) {
-      setOpen(false)
-    }
-  }, [disabled])
+  }, [panelOpen])
 
   return (
     <div className="form-item">
       <span>{label}</span>
       <div
         ref={shellRef}
-        className={`compare-select-shell ${open ? 'open' : ''} ${disabled ? 'disabled' : ''}`}
+        className={`compare-select-shell ${panelOpen ? 'open' : ''} ${disabled ? 'disabled' : ''}`}
       >
         <button
           className="compare-select-trigger"
@@ -190,7 +191,13 @@ function CompareSelectionDropdown({
             if (disabled) {
               return
             }
-            setOpen((current) => !current)
+            setOpen((current) => {
+              const next = !current
+              if (!next) {
+                setQuery('')
+              }
+              return next
+            })
           }}
         >
           <div className="compare-select-trigger-copy">
@@ -207,7 +214,7 @@ function CompareSelectionDropdown({
           </div>
         </button>
 
-        {open ? (
+        {panelOpen ? (
           <div className="compare-select-panel">
             <div className="compare-select-search">
               <input
@@ -226,8 +233,7 @@ function CompareSelectionDropdown({
                     type="button"
                     onClick={() => {
                       onChange(option.value)
-                      setOpen(false)
-                      setQuery('')
+                      closeDropdown()
                     }}
                   >
                     <div className="compare-select-option-copy">
@@ -341,6 +347,7 @@ export function CompareConnectionForm({
               onChange={onSourceProfileChange}
             />
             <CompareSelectionDropdown
+              key={`source-database:${compareForm.source_profile_id}:${sourceLoading ? 'loading' : 'ready'}`}
               label="源端数据库"
               placeholder={
                 !compareForm.source_profile_id
@@ -391,6 +398,7 @@ export function CompareConnectionForm({
               onChange={onTargetProfileChange}
             />
             <CompareSelectionDropdown
+              key={`target-database:${compareForm.target_profile_id}:${targetLoading ? 'loading' : 'ready'}`}
               label="目标端数据库"
               placeholder={
                 !compareForm.target_profile_id

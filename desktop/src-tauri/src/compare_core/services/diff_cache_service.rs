@@ -23,10 +23,18 @@ use crate::{
 const CACHE_FILE_NAME: &str = "diff_results.sqlite3";
 const TABLE_CACHE_DIR: &str = "tables";
 const CACHE_RETENTION_HOURS: u64 = 24;
+const CACHE_MODE_ENV: &str = "ZSZC_COMPARE_CACHE_MODE";
+const CACHE_RETENTION_HOURS_ENV: &str = "ZSZC_COMPARE_CACHE_RETENTION_HOURS";
 const SOURCE_STAGE_TABLE: &str = "source_stage";
 const TARGET_STAGE_TABLE: &str = "target_stage";
 const SOURCE_KEY_STAGE_TABLE: &str = "source_key_stage";
 const TARGET_KEY_STAGE_TABLE: &str = "target_key_stage";
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DiffCacheStorageMode {
+    Full,
+    SummaryOnly,
+}
 
 #[derive(Serialize, Deserialize)]
 enum CachedValue {
@@ -63,6 +71,7 @@ pub struct CompareCacheWriter {
 
 pub struct DiffCacheWriter {
     conn: Connection,
+    detail_cache_file: Option<String>,
 }
 
 pub struct DiffCacheReader {
@@ -104,6 +113,12 @@ pub struct CachedDiffPage {
 struct CachedTableSummaryRecord {
     summary: TableCompareResult,
     detail_cache_file: Option<String>,
+}
+
+struct DiffRecordRows<'a> {
+    key_row: Option<&'a RowMap>,
+    source_row: Option<&'a RowMap>,
+    target_row: Option<&'a RowMap>,
 }
 
 impl CompareCacheWriter {
@@ -178,16 +193,41 @@ impl CompareCacheWriter {
     }
 }
 
+pub fn remove_compare_cache(compare_id: &str) -> Result<(), AppError> {
+    validate_compare_id(compare_id)?;
+    let cache_dir = cache_root_path().join(compare_id);
+    if !cache_dir.exists() {
+        return Ok(());
+    }
+
+    fs::remove_dir_all(cache_dir).map_err(AppError::from)
+}
+
 impl DiffCacheWriter {
     pub fn create_for_table(compare_id: &str, detail_cache_file: &str) -> Result<Self, AppError> {
-        let cache_dir = cache_root_path().join(compare_id).join(TABLE_CACHE_DIR);
-        fs::create_dir_all(&cache_dir).map_err(AppError::from)?;
+        let (conn, persisted_detail_cache_file) = match diff_cache_storage_mode() {
+            DiffCacheStorageMode::Full => {
+                let cache_dir = cache_root_path().join(compare_id).join(TABLE_CACHE_DIR);
+                fs::create_dir_all(&cache_dir).map_err(AppError::from)?;
 
-        let db_path = cache_dir.join(detail_cache_file);
-        let conn = Connection::open(&db_path).map_err(AppError::from)?;
+                let db_path = cache_dir.join(detail_cache_file);
+                let conn = Connection::open(&db_path).map_err(AppError::from)?;
+                (conn, Some(detail_cache_file.to_string()))
+            }
+            DiffCacheStorageMode::SummaryOnly => {
+                (Connection::open_in_memory().map_err(AppError::from)?, None)
+            }
+        };
         initialize_detail_schema(&conn)?;
 
-        Ok(Self { conn })
+        Ok(Self {
+            conn,
+            detail_cache_file: persisted_detail_cache_file,
+        })
+    }
+
+    pub fn detail_cache_file(&self) -> Option<&str> {
+        self.detail_cache_file.as_deref()
     }
 
     pub fn write_insert_diff(
@@ -202,9 +242,11 @@ impl DiffCacheWriter {
             target_table,
             CompareDetailType::Insert,
             signature,
-            None,
-            Some(source_row),
-            None,
+            DiffRecordRows {
+                key_row: None,
+                source_row: Some(source_row),
+                target_row: None,
+            },
         )
     }
 
@@ -220,9 +262,11 @@ impl DiffCacheWriter {
             target_table,
             CompareDetailType::Insert,
             signature,
-            Some(key_row),
-            None,
-            None,
+            DiffRecordRows {
+                key_row: Some(key_row),
+                source_row: None,
+                target_row: None,
+            },
         )
     }
 
@@ -239,9 +283,11 @@ impl DiffCacheWriter {
             target_table,
             CompareDetailType::Update,
             signature,
-            None,
-            Some(source_row),
-            Some(target_row),
+            DiffRecordRows {
+                key_row: None,
+                source_row: Some(source_row),
+                target_row: Some(target_row),
+            },
         )
     }
 
@@ -257,9 +303,11 @@ impl DiffCacheWriter {
             target_table,
             CompareDetailType::Delete,
             signature,
-            None,
-            None,
-            Some(target_row),
+            DiffRecordRows {
+                key_row: None,
+                source_row: None,
+                target_row: Some(target_row),
+            },
         )
     }
 
@@ -275,9 +323,11 @@ impl DiffCacheWriter {
             target_table,
             CompareDetailType::Delete,
             signature,
-            Some(key_row),
-            None,
-            None,
+            DiffRecordRows {
+                key_row: Some(key_row),
+                source_row: None,
+                target_row: None,
+            },
         )
     }
 
@@ -795,13 +845,11 @@ impl DiffCacheWriter {
         target_table: &str,
         detail_type: CompareDetailType,
         signature: &str,
-        key_row: Option<&RowMap>,
-        source_row: Option<&RowMap>,
-        target_row: Option<&RowMap>,
+        rows: DiffRecordRows<'_>,
     ) -> Result<(), AppError> {
-        let key_payload = key_row.map(serialize_row_payload).transpose()?;
-        let source_payload = source_row.map(serialize_row_payload).transpose()?;
-        let target_payload = target_row.map(serialize_row_payload).transpose()?;
+        let key_payload = rows.key_row.map(serialize_row_payload).transpose()?;
+        let source_payload = rows.source_row.map(serialize_row_payload).transpose()?;
+        let target_payload = rows.target_row.map(serialize_row_payload).transpose()?;
 
         self.conn
             .execute(
@@ -983,6 +1031,11 @@ impl DiffCacheReader {
             CompareDetailType::Update => record.summary.update_count,
             CompareDetailType::Delete => record.summary.delete_count,
         };
+        if record.detail_cache_file.is_none() && total > 0 {
+            return Err(AppError::Io(
+                "当前对比仅保留摘要，差异详情未持久化".to_string(),
+            ));
+        }
 
         let rows = self.with_table_conn(record.detail_cache_file.as_deref(), |conn| {
             let mut stmt = conn
@@ -1066,6 +1119,11 @@ impl DiffCacheReader {
             CompareDetailType::Update => record.summary.update_count,
             CompareDetailType::Delete => record.summary.delete_count,
         };
+        if record.detail_cache_file.is_none() && total > 0 {
+            return Err(AppError::Io(
+                "当前对比仅保留摘要，差异详情未持久化".to_string(),
+            ));
+        }
 
         let (row_items, update_items) =
             self.with_table_conn(record.detail_cache_file.as_deref(), |conn| {
@@ -1190,6 +1248,13 @@ impl DiffCacheReader {
                     source_table, target_table
                 ))
             })?;
+        let total =
+            record.summary.insert_count + record.summary.update_count + record.summary.delete_count;
+        if record.detail_cache_file.is_none() && total > 0 {
+            return Err(AppError::Io(
+                "当前对比仅保留摘要，差异详情未持久化".to_string(),
+            ));
+        }
 
         self.with_table_conn(record.detail_cache_file.as_deref(), |conn| {
             let mut stmt = conn
@@ -1269,6 +1334,17 @@ impl DiffCacheReader {
         }
 
         Ok(table_pairs)
+    }
+
+    pub fn has_detail_cache(
+        &self,
+        source_table: &str,
+        target_table: &str,
+    ) -> Result<bool, AppError> {
+        Ok(self
+            .load_summary_record(source_table, target_table)?
+            .and_then(|record| record.detail_cache_file)
+            .is_some())
     }
 
     fn load_summary_record(
@@ -1375,6 +1451,39 @@ fn cache_root_path() -> PathBuf {
         "zszc-sql-client"
     };
     std::env::temp_dir().join(cache_dir_name)
+}
+
+fn diff_cache_storage_mode() -> DiffCacheStorageMode {
+    let raw_mode = std::env::var(CACHE_MODE_ENV).unwrap_or_default();
+    match raw_mode.trim().to_ascii_lowercase().as_str() {
+        "summary" | "summary_only" | "metadata_only" => DiffCacheStorageMode::SummaryOnly,
+        _ => DiffCacheStorageMode::Full,
+    }
+}
+
+fn cache_retention_duration() -> Duration {
+    let retention_hours = std::env::var(CACHE_RETENTION_HOURS_ENV)
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(CACHE_RETENTION_HOURS);
+    Duration::from_secs(retention_hours.saturating_mul(3600))
+}
+
+fn validate_compare_id(compare_id: &str) -> Result<(), AppError> {
+    let trimmed = compare_id.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::Validation("compare_id 不能为空".to_string()));
+    }
+
+    if !trimmed
+        .chars()
+        .all(|char| char.is_ascii_alphanumeric() || matches!(char, '-' | '_'))
+    {
+        return Err(AppError::Validation("compare_id 格式非法".to_string()));
+    }
+
+    Ok(())
 }
 
 fn initialize_manifest_schema(conn: &Connection) -> Result<(), AppError> {
@@ -1490,7 +1599,7 @@ fn cleanup_stale_cache_dirs() -> Result<(), AppError> {
         return Ok(());
     }
 
-    let retention = Duration::from_secs(CACHE_RETENTION_HOURS * 3600);
+    let retention = cache_retention_duration();
     for entry in fs::read_dir(&root).map_err(AppError::from)? {
         let entry = entry.map_err(AppError::from)?;
         let path = entry.path();

@@ -13,7 +13,7 @@ import type {
 
 type SqlEditorMode = 'console' | 'where' | 'order_by'
 
-type SqlEditorProps = {
+export type SqlEditorProps = {
   editor_id: string
   mode: SqlEditorMode
   value: string
@@ -30,7 +30,7 @@ type SqlEditorProps = {
   onExecute?: () => void
 }
 
-type SqlDiffViewerProps = {
+export type SqlDiffViewerProps = {
   editor_id: string
   original_sql: string
   modified_sql: string

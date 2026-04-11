@@ -458,10 +458,10 @@ impl PluginHost {
             guard.remove(plugin_id)
         };
 
-        if let Some(runtime) = runtime {
-            if let Ok(mut runtime) = runtime.try_lock() {
-                let _ = runtime.child.start_kill();
-            }
+        if let Some(runtime) = runtime
+            && let Ok(mut runtime) = runtime.try_lock()
+        {
+            let _ = runtime.child.start_kill();
         }
 
         Ok(())
@@ -506,12 +506,11 @@ fn build_installed_plugin(
         .keys()
         .cloned()
         .collect::<Vec<_>>();
-    let current_platform_supported = manifest.backend.required
-        && manifest
+    let current_platform_supported = !manifest.backend.required
+        || manifest
             .backend
             .entry_by_platform
-            .contains_key(current_platform)
-        || !manifest.backend.required;
+            .contains_key(current_platform);
 
     Ok(InstalledPlugin {
         id: manifest.id.clone(),
@@ -720,7 +719,7 @@ fn extract_plugin_package(package_path: &Path, destination: &Path) -> Result<()>
 
     for index in 0..archive.len() {
         let mut entry = archive.by_index(index)?;
-        let Some(relative_path) = entry.enclosed_name().map(PathBuf::from) else {
+        let Some(relative_path) = entry.enclosed_name() else {
             bail!("插件安装包存在非法路径");
         };
         let output_path = destination.join(&relative_path);

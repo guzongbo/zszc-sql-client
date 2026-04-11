@@ -8,6 +8,7 @@ mod models;
 mod mysql_service;
 mod navicat;
 mod plugin_host;
+mod redis_service;
 mod structure_compare_service;
 
 use crate::app_state::AppState;
@@ -125,15 +126,21 @@ fn main() {
             commands::compare_progress,
             commands::compare_result,
             commands::compare_cancel,
+            commands::compare_cleanup_cache,
             commands::files_choose_sql_path,
             commands::files_choose_export_path,
             commands::clipboard_write_text,
             commands::compare_detail_page,
             commands::compare_export_sql_file,
+            commands::structure_compare_start,
+            commands::structure_compare_progress,
+            commands::structure_compare_result,
+            commands::structure_compare_cancel,
             commands::structure_compare_run,
             commands::structure_compare_detail,
             commands::structure_compare_export_sql_file,
             commands::compare_history_list,
+            commands::compare_history_detail,
             commands::compare_history_add,
             commands::list_table_columns,
             commands::load_table_design,
@@ -155,19 +162,33 @@ fn main() {
             commands::plugins_uninstall,
             commands::plugins_read_frontend_entry,
             commands::plugins_backend_rpc,
+            commands::redis_list_connections,
+            commands::redis_save_connection,
+            commands::redis_delete_connection,
+            commands::redis_test_connection,
+            commands::redis_connect,
+            commands::redis_disconnect,
+            commands::redis_scan_keys,
+            commands::redis_get_key_detail,
+            commands::redis_set_string_value,
+            commands::redis_set_hash_field,
+            commands::redis_delete_hash_field,
+            commands::redis_delete_key,
+            commands::redis_rename_key,
+            commands::redis_set_key_ttl,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");
 
     app.run(|app_handle, event| {
-        if let RunEvent::Exit = event {
-            if let Some(state) = app_handle.try_state::<AppState>() {
-                if let Err(error) = state.mysql_service.disconnect_all() {
-                    warn!(error = %error, "failed to disconnect mysql pools before exit");
-                }
-                if let Err(error) = tauri::async_runtime::block_on(state.plugin_host.stop_all()) {
-                    warn!(error = %error, "failed to stop plugin runtimes before exit");
-                }
+        if let RunEvent::Exit = event
+            && let Some(state) = app_handle.try_state::<AppState>()
+        {
+            if let Err(error) = state.mysql_service.disconnect_all() {
+                warn!(error = %error, "failed to disconnect mysql pools before exit");
+            }
+            if let Err(error) = tauri::async_runtime::block_on(state.plugin_host.stop_all()) {
+                warn!(error = %error, "failed to stop plugin runtimes before exit");
             }
         }
     });

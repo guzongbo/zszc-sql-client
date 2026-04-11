@@ -14,13 +14,13 @@ import {
   getDataCompareSelectionSummary,
   getDataCompareTableSelectionStats,
 } from './state'
+import { formatCompareTaskPhaseLabel } from './taskRuntime'
 import type { CompareFormState, DataCompareState } from './types'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
 import { SummaryCards } from '../../shared/components/SummaryCards'
 import type {
   CompareDetailType,
-  CompareHistoryItem,
-  CompareTaskPhase,
+  CompareHistorySummary,
   ConnectionProfile,
   DatabaseEntry,
 } from '../../types'
@@ -59,7 +59,7 @@ export function DataCompareWorkspace({
   state: DataCompareState
   compareForm: CompareFormState
   profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
+  compareHistoryItems: CompareHistorySummary[]
   databasesByProfile: Record<string, DatabaseEntry[]>
   nodeLoading: Record<string, boolean>
   profileConnectionState: ProfileConnectionState
@@ -663,33 +663,4 @@ export function DataCompareWorkspace({
       )}
     </div>
   )
-}
-
-function formatCompareTaskPhaseLabel(phase: CompareTaskPhase | null) {
-  switch (phase) {
-    case 'pending':
-      return '等待执行'
-    case 'discover_tables':
-      return '发现表清单'
-    case 'prepare_table':
-      return '准备单表对比'
-    case 'table_checksum':
-      return '表级校验和预筛'
-    case 'keyed_hash_scan':
-      return '键控哈希扫描'
-    case 'chunk_hash_scan':
-      return '分块哈希扫描'
-    case 'source_stage_load':
-      return '写入源端缓存'
-    case 'target_stage_load':
-      return '写入目标端缓存'
-    case 'finalize_cache':
-      return '归并缓存结果'
-    case 'compare_table':
-      return '执行单表比较'
-    case 'completed':
-      return '已完成'
-    default:
-      return 'running'
-  }
 }

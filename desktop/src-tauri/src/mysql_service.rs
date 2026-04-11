@@ -720,19 +720,19 @@ fn parse_type_details(column_type: &str) -> (String, Option<u32>, Option<u32>) {
         .unwrap_or("")
         .to_string();
 
-    if let Some(start) = lower.find('(') {
-        if let Some(end_offset) = lower[start + 1..].find(')') {
-            let inner = &lower[start + 1..start + 1 + end_offset];
-            let parts = inner
-                .split(',')
-                .map(|part| part.trim().parse::<u32>().ok())
-                .collect::<Vec<_>>();
+    if let Some(start) = lower.find('(')
+        && let Some(end_offset) = lower[start + 1..].find(')')
+    {
+        let inner = &lower[start + 1..start + 1 + end_offset];
+        let parts = inner
+            .split(',')
+            .map(|part| part.trim().parse::<u32>().ok())
+            .collect::<Vec<_>>();
 
-            match parts.as_slice() {
-                [Some(length)] => return (data_type, Some(*length), None),
-                [Some(length), Some(scale)] => return (data_type, Some(*length), Some(*scale)),
-                _ => {}
-            }
+        match parts.as_slice() {
+            [Some(length)] => return (data_type, Some(*length), None),
+            [Some(length), Some(scale)] => return (data_type, Some(*length), Some(*scale)),
+            _ => {}
         }
     }
 

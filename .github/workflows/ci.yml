@@ -1,6 +1,12 @@
 name: ci
 
 on:
+  push:
+    branches:
+      - main
+      - master
+      - 'codex/**'
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -54,8 +60,14 @@ jobs:
       - name: Install desktop dependencies
         run: npm ci --prefix desktop
 
+      - name: Lint frontend
+        run: npm --prefix frontend run lint
+
       - name: Build frontend
         run: npm --prefix frontend run build
 
-      - name: Check desktop
-        run: cargo check --manifest-path desktop/src-tauri/Cargo.toml --locked
+      - name: Test desktop
+        run: cargo test --manifest-path desktop/src-tauri/Cargo.toml --locked
+
+      - name: Lint desktop
+        run: cargo clippy --manifest-path desktop/src-tauri/Cargo.toml --all-targets --locked -- -D warnings

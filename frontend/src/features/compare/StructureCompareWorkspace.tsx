@@ -5,11 +5,12 @@ import {
   getStructureItemsByCategory,
   getStructureSelectionTotal,
 } from './state'
+import { formatCompareTaskPhaseLabel } from './taskRuntime'
 import type { CompareFormState, StructureCompareState } from './types'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
 import { SummaryCards } from '../../shared/components/SummaryCards'
 import type {
-  CompareHistoryItem,
+  CompareHistorySummary,
   ConnectionProfile,
   DatabaseEntry,
   StructureDetailCategory,
@@ -36,6 +37,7 @@ export function StructureCompareWorkspace({
   detailConcurrencyInput,
   onDetailConcurrencyInputChange,
   onExportSql,
+  onCancelCompare,
   onCategoryChange,
   onCategoryToggle,
   onTableToggle,
@@ -44,7 +46,7 @@ export function StructureCompareWorkspace({
   state: StructureCompareState
   compareForm: CompareFormState
   profiles: ConnectionProfile[]
-  compareHistoryItems: CompareHistoryItem[]
+  compareHistoryItems: CompareHistorySummary[]
   databasesByProfile: Record<string, DatabaseEntry[]>
   nodeLoading: Record<string, boolean>
   profileConnectionState: ProfileConnectionState
@@ -59,6 +61,7 @@ export function StructureCompareWorkspace({
   detailConcurrencyInput: string
   onDetailConcurrencyInputChange: (value: string) => void
   onExportSql: () => void
+  onCancelCompare: () => void
   onCategoryChange: (category: StructureDetailCategory) => void
   onCategoryToggle: (category: StructureDetailCategory, checked: boolean) => void
   onTableToggle: (
@@ -161,6 +164,29 @@ export function StructureCompareWorkspace({
               </div>
             </>
           )}
+          {state.task_progress ? (
+            <div className="status-panel compare-status-panel">
+              <strong>任务状态</strong>
+              <span>
+                {state.task_progress.completed_tables}/{state.task_progress.total_tables} 项
+              </span>
+              <span>{formatCompareTaskPhaseLabel(state.task_progress.current_phase)}</span>
+              {state.task_progress.current_phase_progress?.total ? (
+                <span>
+                  阶段进度 {state.task_progress.current_phase_progress.current}/
+                  {state.task_progress.current_phase_progress.total}
+                </span>
+              ) : null}
+              {state.task_progress.current_table ? (
+                <span>{state.task_progress.current_table}</span>
+              ) : null}
+              {state.loading ? (
+                <button className="flat-button danger" type="button" onClick={onCancelCompare}>
+                  取消任务
+                </button>
+              ) : null}
+            </div>
+          ) : null}
         </div>
       </div>
     )
@@ -342,7 +368,7 @@ export function StructureCompareWorkspace({
             导出结构 SQL
           </button>
           <button className="flat-button primary" type="button" onClick={onRunCompare}>
-            重新比较
+            {state.loading ? '比较中...' : '重新比较'}
           </button>
         </div>
       </div>

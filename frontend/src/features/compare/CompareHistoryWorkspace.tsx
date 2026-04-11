@@ -1,10 +1,16 @@
-import type { CompareHistoryItem, CompareHistoryType } from '../../types'
+import type {
+  CompareHistoryItem,
+  CompareHistorySummary,
+  CompareHistoryType,
+} from '../../types'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
 import { SummaryCards } from '../../shared/components/SummaryCards'
 
 type CompareHistoryWorkspaceProps = {
-  historyItems: CompareHistoryItem[]
+  historyItems: CompareHistorySummary[]
+  selectedHistorySummary: CompareHistorySummary | null
   selectedHistoryItem: CompareHistoryItem | null
+  loadingHistoryDetail: boolean
   historyType: CompareHistoryType
   onSelect: (historyId: number) => void
 }
@@ -27,10 +33,14 @@ function formatDateTime(value: string) {
 
 export function CompareHistoryWorkspace({
   historyItems,
+  selectedHistorySummary,
   selectedHistoryItem,
+  loadingHistoryDetail,
   historyType,
   onSelect,
 }: CompareHistoryWorkspaceProps) {
+  const detailBase = selectedHistoryItem ?? selectedHistorySummary
+
   return (
     <div className="compare-workspace">
       <div className="compare-page-header">
@@ -54,7 +64,7 @@ export function CompareHistoryWorkspace({
             ) : (
               historyItems.map((item) => (
                 <button
-                  className={`compare-list-button ${selectedHistoryItem?.id === item.id ? 'active' : ''}`}
+                  className={`compare-list-button ${detailBase?.id === item.id ? 'active' : ''}`}
                   key={item.id}
                   type="button"
                   onClick={() => onSelect(item.id)}
@@ -74,42 +84,48 @@ export function CompareHistoryWorkspace({
           <div className="section-head">
             <div>
               <h2>记录详情</h2>
-              <p>{selectedHistoryItem ? '展示表范围、统计和耗时信息。' : '请选择一条记录。'}</p>
+              <p>{detailBase ? '展示表范围、统计和耗时信息。' : '请选择一条记录。'}</p>
             </div>
           </div>
-          {selectedHistoryItem ? (
+          {detailBase ? (
             <div className="compare-detail-list">
               <SummaryCards
                 items={
-                  selectedHistoryItem.history_type === 'data'
+                  detailBase.history_type === 'data'
                     ? [
-                        ['已对比表', String(selectedHistoryItem.compared_tables)],
-                        ['INSERT', String(selectedHistoryItem.insert_count)],
-                        ['UPDATE', String(selectedHistoryItem.update_count)],
-                        ['DELETE', String(selectedHistoryItem.delete_count)],
+                        ['已对比表', String(detailBase.compared_tables)],
+                        ['INSERT', String(detailBase.insert_count)],
+                        ['UPDATE', String(detailBase.update_count)],
+                        ['DELETE', String(detailBase.delete_count)],
                       ]
                     : [
-                        ['源端表数', String(selectedHistoryItem.source_table_count)],
-                        ['新增表', String(selectedHistoryItem.structure_added_count)],
-                        ['修改表', String(selectedHistoryItem.structure_modified_count)],
-                        ['删除表', String(selectedHistoryItem.structure_deleted_count)],
+                        ['源端表数', String(detailBase.source_table_count)],
+                        ['新增表', String(detailBase.structure_added_count)],
+                        ['修改表', String(detailBase.structure_modified_count)],
+                        ['删除表', String(detailBase.structure_deleted_count)],
                       ]
                 }
               />
               <div className="status-panel">
-                {selectedHistoryItem.source_data_source_name} / {selectedHistoryItem.source_database}
+                {detailBase.source_data_source_name} / {detailBase.source_database}
                 {' -> '}
-                {selectedHistoryItem.target_data_source_name} / {selectedHistoryItem.target_database}
+                {detailBase.target_data_source_name} / {detailBase.target_database}
               </div>
               <div className="compare-summary-list">
-                <span>表范围：{selectedHistoryItem.table_mode === 'all' ? '全部同名表' : '手动选择'}</span>
-                <span>记录时间：{formatDateTime(selectedHistoryItem.created_at)}</span>
-                <span>总耗时：{selectedHistoryItem.performance.total_elapsed_ms} ms</span>
-                <span>涉及表数：{selectedHistoryItem.total_tables}</span>
+                <span>表范围：{detailBase.table_mode === 'all' ? '全部同名表' : '手动选择'}</span>
+                <span>记录时间：{formatDateTime(detailBase.created_at)}</span>
+                <span>总耗时：{detailBase.total_elapsed_ms} ms</span>
+                <span>涉及表数：{detailBase.total_tables}</span>
               </div>
-              <pre className="code-block">
-                {JSON.stringify(selectedHistoryItem.table_detail, null, 2)}
-              </pre>
+              {selectedHistoryItem ? (
+                <pre className="code-block">
+                  {JSON.stringify(selectedHistoryItem.table_detail, null, 2)}
+                </pre>
+              ) : loadingHistoryDetail ? (
+                <div className="status-panel">正在按需加载该条记录的详细表范围与性能阶段信息。</div>
+              ) : (
+                <div className="status-panel">该记录的详细信息暂不可用。</div>
+              )}
             </div>
           ) : null}
         </div>

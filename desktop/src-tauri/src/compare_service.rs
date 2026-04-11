@@ -40,6 +40,12 @@ pub struct CompareExecutionControl<'a> {
 }
 
 impl CompareService {
+    pub fn cleanup_compare_cache(&self, compare_id: &str) -> Result<()> {
+        self.core
+            .cleanup_compare_cache(compare_id)
+            .map_err(core_error_to_anyhow)
+    }
+
     pub async fn discover_tables(
         &self,
         request: &crate::models::CompareTableDiscoveryRequest,

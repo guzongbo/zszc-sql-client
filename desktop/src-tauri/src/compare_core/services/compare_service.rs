@@ -28,6 +28,7 @@ use crate::{
     compare_core::services::{
         diff_cache_service::{
             CachedDiffPage, CompareCacheWriter, DiffCacheReader, DiffCacheWriter, KeyedStageResult,
+            remove_compare_cache,
         },
         mysql_service::{MySqlSession, TableColumnDefinition, TableKeyColumns, row_to_map},
     },
@@ -252,6 +253,10 @@ impl CompareService {
         Self
     }
 
+    pub fn cleanup_compare_cache(&self, compare_id: &str) -> Result<(), AppError> {
+        remove_compare_cache(compare_id)
+    }
+
     pub async fn discover_tables(
         &self,
         request: &TableDiscoveryRequest,
@@ -354,6 +359,8 @@ impl CompareService {
                         build_table_cache_file_name(&source_table, &target_table);
                     let mut table_cache_writer =
                         DiffCacheWriter::create_for_table(&compare_id_value, &detail_cache_file)?;
+                    let persisted_detail_cache_file =
+                        table_cache_writer.detail_cache_file().map(str::to_string);
                     let report_child_progress = |mut update: CompareExecutionUpdate| {
                         update.completed_tables = completed_tables.load(AtomicOrdering::SeqCst);
                         report_compare_progress(control, update);
@@ -391,7 +398,7 @@ impl CompareService {
                         .await?;
 
                     Ok::<_, AppError>((
-                        detail_cache_file,
+                        persisted_detail_cache_file,
                         table_result,
                         table_started_at.elapsed().as_millis() as u64,
                     ))
@@ -401,7 +408,7 @@ impl CompareService {
 
         while let Some(task_result) = table_stream.next().await {
             let (detail_cache_file, table_result, elapsed_ms) = task_result?;
-            cache_writer.write_table_summary(&table_result, Some(&detail_cache_file))?;
+            cache_writer.write_table_summary(&table_result, detail_cache_file.as_deref())?;
             let completed_tables = completed_tables.fetch_add(1, AtomicOrdering::SeqCst) + 1;
             report_compare_progress(
                 control,
@@ -922,25 +929,25 @@ impl CompareService {
         let source_session = MySqlSession::new(&compare_request.source);
         let target_session = MySqlSession::new(&compare_request.target);
 
-        if let Some(compare_id) = request.compare_id.as_deref() {
-            if let Some(cached_detail) = load_cached_detail(compare_id, request)? {
-                return match cached_detail {
-                    CachedDetailLoad::Direct(response) => Ok(response),
-                    CachedDetailLoad::Keyed {
-                        summary,
+        if let Some(compare_id) = request.compare_id.as_deref()
+            && let Some(cached_detail) = load_cached_detail(compare_id, request)?
+        {
+            return match cached_detail {
+                CachedDetailLoad::Direct(response) => Ok(response),
+                CachedDetailLoad::Keyed {
+                    summary,
+                    cached_page,
+                } => {
+                    load_keyed_detail_page_from_cache(
+                        &source_session,
+                        &target_session,
+                        &summary,
+                        request,
                         cached_page,
-                    } => {
-                        load_keyed_detail_page_from_cache(
-                            &source_session,
-                            &target_session,
-                            &summary,
-                            request,
-                            cached_page,
-                        )
-                        .await
-                    }
-                };
-            }
+                    )
+                    .await
+                }
+            };
         }
 
         let plan = load_table_plan(
@@ -1000,6 +1007,7 @@ impl CompareService {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn compare_single_table(
         &self,
         source_session: &MySqlSession,
@@ -1581,9 +1589,7 @@ fn chunk_plan_rejection_reason(
         return Some("chunk_total_exceeds_limit");
     }
 
-    let Some(estimated_rows) = estimated_rows.filter(|value| *value > 0) else {
-        return None;
-    };
+    let estimated_rows = estimated_rows.filter(|value| *value > 0)?;
     let ideal_chunks = (estimated_rows as usize).div_ceil(chunk_plan.chunk_size.max(1) as usize);
     let allowed_chunks = ideal_chunks.saturating_mul(MAX_CHUNK_SCAN_EXPANSION).max(1);
     if total_chunks > allowed_chunks {
@@ -1675,6 +1681,7 @@ async fn should_skip_by_table_checksum(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences<F>(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -1717,6 +1724,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences_full<F>(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -1833,6 +1841,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences_by_chunks<F>(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2230,6 +2239,7 @@ struct KeyedDiffCacheCollector<'a> {
 }
 
 impl<'a> KeyedDiffCacheCollector<'a> {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         source_session: &'a MySqlSession,
         target_session: &'a MySqlSession,
@@ -2402,6 +2412,7 @@ fn diff_columns_between_rows(
         .collect::<Vec<_>>()
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compare_keyed_table_hash_to_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2463,6 +2474,7 @@ async fn compare_keyed_table_hash_to_cache(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences_into_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2509,6 +2521,7 @@ async fn scan_keyed_table_hash_differences_into_cache(
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences_full_into_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2635,6 +2648,7 @@ async fn scan_keyed_table_hash_differences_full_into_cache(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn scan_keyed_table_hash_differences_by_chunks_into_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2825,6 +2839,7 @@ async fn emit_keyed_hash_diff_events_into_cache(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compare_with_full_row_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -2906,6 +2921,7 @@ async fn compare_with_full_row_cache(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn compare_unsafe_keyed_rows_with_cache(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -3203,6 +3219,7 @@ async fn build_insert_sql_batch(
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn build_update_sql_batch(
     target_database: &str,
     target_table: &str,
@@ -3262,6 +3279,7 @@ async fn build_update_sql_batch(
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn generate_sql_with_keys_streaming(
     target_database: &str,
     source_session: &MySqlSession,
@@ -3369,6 +3387,7 @@ async fn generate_sql_with_keys_streaming(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn write_sql_with_keys_streaming(
     target_database: &str,
     source_session: &MySqlSession,
@@ -3640,11 +3659,11 @@ fn build_exclusion_counts(signatures: &[String]) -> BTreeMap<String, usize> {
 }
 
 fn consume_exclusion(counts: &mut BTreeMap<String, usize>, signature: &str) -> bool {
-    if let Some(counter) = counts.get_mut(signature) {
-        if *counter > 0 {
-            *counter -= 1;
-            return true;
-        }
+    if let Some(counter) = counts.get_mut(signature)
+        && *counter > 0
+    {
+        *counter -= 1;
+        return true;
     }
     false
 }
@@ -3733,6 +3752,7 @@ fn load_cached_diff_page_by_compare_id(
         .map(Some)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn emit_cached_sql_for_table<F>(
     compare_id: &str,
     action_label: &str,
@@ -3992,6 +4012,7 @@ where
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_sql_with_keys(
     target_database: &str,
     target_table: &str,
@@ -4093,6 +4114,7 @@ fn generate_sql_with_keys(
     sql_statements.extend(insert_statements);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn generate_sql_with_full_rows(
     target_database: &str,
     target_table: &str,
@@ -4168,6 +4190,7 @@ fn generate_sql_with_full_rows(
     sql_statements.extend(insert_statements);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_sql_with_keys(
     target_database: &str,
     target_table: &str,
@@ -4264,6 +4287,7 @@ fn write_sql_with_keys(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn write_sql_with_full_rows(
     target_database: &str,
     target_table: &str,
@@ -4514,6 +4538,7 @@ async fn load_keyed_detail_page_from_cache(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn load_keyed_detail_page(
     source_session: &MySqlSession,
     target_session: &MySqlSession,
@@ -4639,6 +4664,7 @@ async fn load_keyed_detail_page(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn load_full_row_detail_page(
     source_session: &MySqlSession,
     target_session: &MySqlSession,

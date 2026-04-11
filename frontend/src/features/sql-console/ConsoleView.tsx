@@ -1,5 +1,5 @@
 import type { DatabaseEntry, SqlAutocompleteSchema } from '../../types'
-import { SqlEditor } from '../../SqlEditor'
+import { LazySqlEditor } from '../../LazySqlEditor'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
 import { formatTotalRowsLabel } from '../../shared/utils/pagination'
 import { DataGridTable } from '../table-data/DataGridTable'
@@ -107,7 +107,7 @@ export function ConsoleView({
         </div>
 
         <div className="console-editor">
-          <SqlEditor
+          <LazySqlEditor
             editor_id={tab.id}
             mode="console"
             value={tab.console.sql}

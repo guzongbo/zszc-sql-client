@@ -9,6 +9,7 @@ import type {
   CompareDetailPageResponse,
   CompareHistoryInput,
   CompareHistoryItem,
+  CompareHistorySummary,
   CompareTableDiscoveryRequest,
   CompareTableDiscoveryResponse,
   CompareTaskCancelResponse,
@@ -42,9 +43,22 @@ import type {
   PluginFrontendDocument,
   PluginInstallDialogResult,
   PluginOperationResult,
+  RedisConnectionProfile,
+  RedisConnectionTestResult,
+  RedisDeleteHashFieldPayload,
+  RedisHashFieldPayload,
+  RedisKeyDetail,
+  RedisKeyDetailRequest,
+  RedisKeyIdentity,
+  RedisRenameKeyPayload,
+  RedisScanKeysRequest,
+  RedisScanKeysResponse,
+  RedisSetKeyTtlPayload,
+  RedisStringValuePayload,
   RenameDataSourceGroupPayload,
   RenameDataSourceGroupResult,
   SaveConnectionProfilePayload,
+  SaveRedisConnectionPayload,
   SaveFileDialogResult,
   SqlAutocompleteSchema,
   SqlConsoleResult,
@@ -53,6 +67,7 @@ import type {
   StructureCompareDetailResponse,
   StructureCompareRequest,
   StructureCompareResponse,
+  StructureCompareTaskResultResponse,
   StructureExportSqlFileRequest,
   StructureExportSqlFileResponse,
   TableColumnSummary,
@@ -267,6 +282,13 @@ export async function cancelDataCompareTask(
   return invokeCommand<CompareTaskCancelResponse>('compare_cancel', { compareId })
 }
 
+export async function cleanupDataCompareCache(compareId: string): Promise<void> {
+  if (!isDesktopShell()) {
+    return mockApi.cleanupDataCompareCache(compareId)
+  }
+  return invokeCommand<void>('compare_cleanup_cache', { compareId })
+}
+
 export async function chooseSqlExportPath(
   payload?: ChooseFilePayload,
 ): Promise<SaveFileDialogResult> {
@@ -314,6 +336,46 @@ export async function runStructureCompare(
   return invokeCommand<StructureCompareResponse>('structure_compare_run', { payload })
 }
 
+export async function startStructureCompareTask(
+  payload: StructureCompareRequest,
+): Promise<CompareTaskStartResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.startStructureCompareTask(payload)
+  }
+  return invokeCommand<CompareTaskStartResponse>('structure_compare_start', { payload })
+}
+
+export async function getStructureCompareTaskProgress(
+  compareId: string,
+): Promise<CompareTaskProgressResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.getStructureCompareTaskProgress(compareId)
+  }
+  return invokeCommand<CompareTaskProgressResponse>('structure_compare_progress', {
+    compareId,
+  })
+}
+
+export async function getStructureCompareTaskResult(
+  compareId: string,
+): Promise<StructureCompareTaskResultResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.getStructureCompareTaskResult(compareId)
+  }
+  return invokeCommand<StructureCompareTaskResultResponse>('structure_compare_result', {
+    compareId,
+  })
+}
+
+export async function cancelStructureCompareTask(
+  compareId: string,
+): Promise<CompareTaskCancelResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.cancelStructureCompareTask(compareId)
+  }
+  return invokeCommand<CompareTaskCancelResponse>('structure_compare_cancel', { compareId })
+}
+
 export async function loadStructureCompareDetail(
   payload: StructureCompareDetailRequest,
 ): Promise<StructureCompareDetailResponse> {
@@ -336,11 +398,20 @@ export async function exportStructureCompareSqlFile(
   })
 }
 
-export async function listCompareHistory(limit?: number): Promise<CompareHistoryItem[]> {
+export async function listCompareHistory(limit?: number): Promise<CompareHistorySummary[]> {
   if (!isDesktopShell()) {
     return mockApi.listCompareHistory(limit)
   }
-  return invokeCommand<CompareHistoryItem[]>('compare_history_list', { limit })
+  return invokeCommand<CompareHistorySummary[]>('compare_history_list', { limit })
+}
+
+export async function getCompareHistoryDetail(
+  historyId: number,
+): Promise<CompareHistoryItem | null> {
+  if (!isDesktopShell()) {
+    return mockApi.getCompareHistoryDetail(historyId)
+  }
+  return invokeCommand<CompareHistoryItem | null>('compare_history_detail', { historyId })
 }
 
 export async function addCompareHistory(
@@ -400,6 +471,124 @@ export async function invokePluginBackend<T>(
     },
   })
   return response.result
+}
+
+export async function listRedisConnections(): Promise<RedisConnectionProfile[]> {
+  if (!isDesktopShell()) {
+    return mockApi.listRedisConnections()
+  }
+  return invokeCommand<RedisConnectionProfile[]>('redis_list_connections')
+}
+
+export async function saveRedisConnection(
+  payload: SaveRedisConnectionPayload,
+): Promise<RedisConnectionProfile> {
+  if (!isDesktopShell()) {
+    return mockApi.saveRedisConnection(payload)
+  }
+  return invokeCommand<RedisConnectionProfile>('redis_save_connection', { payload })
+}
+
+export async function deleteRedisConnection(profileId: string): Promise<void> {
+  if (!isDesktopShell()) {
+    return mockApi.deleteRedisConnection(profileId)
+  }
+  return invokeCommand<void>('redis_delete_connection', { profileId })
+}
+
+export async function testRedisConnection(
+  payload: SaveRedisConnectionPayload,
+): Promise<RedisConnectionTestResult> {
+  if (!isDesktopShell()) {
+    return mockApi.testRedisConnection(payload)
+  }
+  return invokeCommand<RedisConnectionTestResult>('redis_test_connection', { payload })
+}
+
+export async function connectRedis(
+  profileId: string,
+): Promise<RedisConnectionTestResult> {
+  if (!isDesktopShell()) {
+    return mockApi.connectRedis(profileId)
+  }
+  return invokeCommand<RedisConnectionTestResult>('redis_connect', { profileId })
+}
+
+export async function disconnectRedis(profileId: string): Promise<void> {
+  if (!isDesktopShell()) {
+    return mockApi.disconnectRedis(profileId)
+  }
+  return invokeCommand<void>('redis_disconnect', { profileId })
+}
+
+export async function scanRedisKeys(
+  payload: RedisScanKeysRequest,
+): Promise<RedisScanKeysResponse> {
+  if (!isDesktopShell()) {
+    return mockApi.scanRedisKeys(payload)
+  }
+  return invokeCommand<RedisScanKeysResponse>('redis_scan_keys', { payload })
+}
+
+export async function getRedisKeyDetail(
+  payload: RedisKeyDetailRequest,
+): Promise<RedisKeyDetail> {
+  if (!isDesktopShell()) {
+    return mockApi.getRedisKeyDetail(payload)
+  }
+  return invokeCommand<RedisKeyDetail>('redis_get_key_detail', { payload })
+}
+
+export async function setRedisStringValue(
+  payload: RedisStringValuePayload,
+): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.setRedisStringValue(payload)
+  }
+  return invokeCommand<MutationResult>('redis_set_string_value', { payload })
+}
+
+export async function setRedisHashField(
+  payload: RedisHashFieldPayload,
+): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.setRedisHashField(payload)
+  }
+  return invokeCommand<MutationResult>('redis_set_hash_field', { payload })
+}
+
+export async function deleteRedisHashField(
+  payload: RedisDeleteHashFieldPayload,
+): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.deleteRedisHashField(payload)
+  }
+  return invokeCommand<MutationResult>('redis_delete_hash_field', { payload })
+}
+
+export async function deleteRedisKey(payload: RedisKeyIdentity): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.deleteRedisKey(payload)
+  }
+  return invokeCommand<MutationResult>('redis_delete_key', { payload })
+}
+
+export async function renameRedisKey(
+  payload: RedisRenameKeyPayload,
+): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.renameRedisKey(payload)
+  }
+  return invokeCommand<MutationResult>('redis_rename_key', { payload })
+}
+
+export async function setRedisKeyTtl(
+  payload: RedisSetKeyTtlPayload,
+): Promise<MutationResult> {
+  if (!isDesktopShell()) {
+    return mockApi.setRedisKeyTtl(payload)
+  }
+  return invokeCommand<MutationResult>('redis_set_key_ttl', { payload })
 }
 
 export async function listTableColumns(

@@ -1,5 +1,5 @@
 import type { CellValue } from '../../types'
-import { SqlEditor } from '../../SqlEditor'
+import { LazySqlEditor } from '../../LazySqlEditor'
 import { EmptyNotice } from '../../shared/components/EmptyNotice'
 import { formatTotalRowsLabel } from '../../shared/utils/pagination'
 import type { DataTab } from '../workspace/types'
@@ -121,7 +121,7 @@ export function DataEditorView({
         <div className="inline-query-bar">
           <label className="inline-query-field">
             <span>WHERE</span>
-            <SqlEditor
+            <LazySqlEditor
               editor_id={`${tab.id}:where_clause`}
               mode="where"
               placeholder="例如 id > 100 AND status = 'ready'"
@@ -136,7 +136,7 @@ export function DataEditorView({
 
           <label className="inline-query-field">
             <span>ORDER BY</span>
-            <SqlEditor
+            <LazySqlEditor
               editor_id={`${tab.id}:order_by_clause`}
               mode="order_by"
               placeholder="例如 created_at DESC, id ASC"

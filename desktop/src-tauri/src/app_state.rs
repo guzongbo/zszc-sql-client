@@ -1,8 +1,9 @@
 use crate::compare_service::CompareService;
-use crate::compare_task_manager::CompareTaskManager;
+use crate::compare_task_manager::{DataCompareTaskManager, StructureCompareTaskManager};
 use crate::local_store::LocalStore;
 use crate::mysql_service::MysqlService;
 use crate::plugin_host::PluginHost;
+use crate::redis_service::RedisService;
 use crate::structure_compare_service::StructureCompareService;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -14,9 +15,11 @@ pub struct AppState {
     pub app_data_dir: PathBuf,
     pub local_store: Arc<LocalStore>,
     pub mysql_service: Arc<MysqlService>,
+    pub redis_service: Arc<RedisService>,
     pub compare_service: Arc<CompareService>,
     pub structure_compare_service: Arc<StructureCompareService>,
-    pub compare_tasks: CompareTaskManager,
+    pub compare_tasks: DataCompareTaskManager,
+    pub structure_compare_tasks: StructureCompareTaskManager,
     pub plugin_host: Arc<PluginHost>,
 }
 
@@ -31,9 +34,11 @@ impl AppState {
             app_data_dir: app_data_dir.clone(),
             local_store: Arc::new(local_store),
             mysql_service: Arc::new(MysqlService::default()),
+            redis_service: Arc::new(RedisService),
             compare_service: Arc::new(CompareService::default()),
             structure_compare_service: Arc::new(StructureCompareService::default()),
-            compare_tasks: CompareTaskManager::default(),
+            compare_tasks: DataCompareTaskManager::default(),
+            structure_compare_tasks: StructureCompareTaskManager::default(),
             plugin_host: Arc::new(PluginHost::new(app_data_dir.clone())?),
         })
     }

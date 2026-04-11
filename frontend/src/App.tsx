@@ -2,6 +2,7 @@ import {
   Suspense,
   lazy,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -14,6 +15,8 @@ import {
   applyTableDataChanges,
   applyTableDesignChanges,
   cancelDataCompareTask,
+  cancelStructureCompareTask,
+  cleanupDataCompareCache,
   chooseExportPath,
   chooseSqlExportPath,
   compareDiscoverTables,
@@ -31,8 +34,11 @@ import {
   exportTableDataFile,
   exportTableDataSqlText,
   getAppBootstrap,
+  getCompareHistoryDetail,
   getDataCompareTaskProgress,
   getDataCompareTaskResult,
+  getStructureCompareTaskProgress,
+  getStructureCompareTaskResult,
   getTableDdl,
   installPluginFromDisk,
   importNavicatConnectionProfiles,
@@ -49,9 +55,9 @@ import {
   previewTableDataChanges,
   previewTableDesignSql,
   renameDataSourceGroup,
-  runStructureCompare,
   saveConnectionProfile,
   startDataCompareTask,
+  startStructureCompareTask,
   testConnectionProfile,
   uninstallPlugin,
   writeClipboardText,
@@ -71,6 +77,7 @@ import {
   pickFirstStructureCategory,
   toggleExcludedSignature,
 } from './features/compare/state'
+import { waitForCompareTask } from './features/compare/taskRuntime'
 import type {
   CompareFormState,
   CompareWorkflowStep,
@@ -84,6 +91,7 @@ import {
   createGridRow,
 } from './features/table-data/dataMutations'
 import type { ConsoleTab, DataGridRow, DataTab } from './features/workspace/types'
+import { WorkspaceSwitcher } from './features/workspace/WorkspaceSwitcher'
 import { EmptyNotice } from './shared/components/EmptyNotice'
 import { PluginManagerModal } from './features/plugins/PluginManagerModal'
 import { PluginWorkspace } from './features/plugins/PluginWorkspace'
@@ -97,6 +105,7 @@ import type {
   ExportScope,
   CompareHistoryInput,
   CompareHistoryItem,
+  CompareHistorySummary,
   CompareHistoryType,
   ConnectionProfile,
   CreateDatabasePayload,
@@ -300,6 +309,7 @@ type DataSourceTreeGroup = {
 
 const ungroupedGroupName = '未分组'
 const databaseWorkspaceId = 'workspace:database'
+const redisWorkspaceId = 'workspace:redis'
 const commonDataTypes = [
   'bigint',
   'int',
@@ -376,6 +386,7 @@ const defaultDataCompareState: DataCompareState = {
 const defaultStructureCompareState: StructureCompareState = {
   current_step: 1,
   loading: false,
+  task_progress: null,
   result: null,
   current_request: null,
   selection_by_category: {
@@ -418,6 +429,12 @@ const CompareHistoryWorkspace = lazy(() =>
   })),
 )
 
+const RedisWorkspace = lazy(() =>
+  import('./features/redis/RedisWorkspace').then((module) => ({
+    default: module.RedisWorkspace,
+  })),
+)
+
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
   const [bootstrapError, setBootstrapError] = useState('')
@@ -440,7 +457,11 @@ function App() {
     defaultStructureCompareState,
   )
   const [structureDetailConcurrencyInput, setStructureDetailConcurrencyInput] = useState('')
-  const [compareHistoryItems, setCompareHistoryItems] = useState<CompareHistoryItem[]>([])
+  const [compareHistoryItems, setCompareHistoryItems] = useState<CompareHistorySummary[]>([])
+  const [compareHistoryDetailById, setCompareHistoryDetailById] = useState<
+    Record<number, CompareHistoryItem>
+  >({})
+  const [historyDetailLoadingId, setHistoryDetailLoadingId] = useState<number | null>(null)
   const [compareHistoryType, setCompareHistoryType] =
     useState<CompareHistoryType>('data')
   const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null)
@@ -475,9 +496,15 @@ function App() {
   const [outputLogs, setOutputLogs] = useState<OutputLogEntry[]>([])
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const outputBodyRef = useRef<HTMLDivElement | null>(null)
+  const tabsRef = useRef<WorkspaceTab[]>([])
+  const activeCompareCacheIdRef = useRef<string | null>(null)
   const sqlAutocompleteRequestsRef = useRef<
     Partial<Record<string, Promise<SqlAutocompleteSchema | null>>>
   >({})
+  const visibleHistoryItems = useMemo(
+    () => compareHistoryItems.filter((item) => item.history_type === compareHistoryType),
+    [compareHistoryItems, compareHistoryType],
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -519,7 +546,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (activeWorkspaceId === databaseWorkspaceId) {
+    if (activeWorkspaceId === databaseWorkspaceId || activeWorkspaceId === redisWorkspaceId) {
       return
     }
 
@@ -560,17 +587,54 @@ function App() {
   }, [toasts])
 
   useEffect(() => {
-    const activeItems = compareHistoryItems.filter(
-      (item) => item.history_type === compareHistoryType,
-    )
-    if (activeItems.length === 0) {
+    if (visibleHistoryItems.length === 0) {
       setSelectedHistoryId(null)
       return
     }
-    if (!activeItems.some((item) => item.id === selectedHistoryId)) {
-      setSelectedHistoryId(activeItems[0].id)
+    if (!visibleHistoryItems.some((item) => item.id === selectedHistoryId)) {
+      setSelectedHistoryId(visibleHistoryItems[0].id)
     }
-  }, [compareHistoryItems, compareHistoryType, selectedHistoryId])
+  }, [selectedHistoryId, visibleHistoryItems])
+
+  useEffect(() => {
+    if (activeSection !== 'compare_history' || selectedHistoryId == null) {
+      return
+    }
+    if (compareHistoryDetailById[selectedHistoryId]) {
+      return
+    }
+
+    let cancelled = false
+    setHistoryDetailLoadingId(selectedHistoryId)
+
+    void getCompareHistoryDetail(selectedHistoryId)
+      .then((detail) => {
+        if (cancelled || !detail) {
+          return
+        }
+
+        setCompareHistoryDetailById((previous) => ({
+          ...previous,
+          [selectedHistoryId]: detail,
+        }))
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          pushToast(error instanceof Error ? error.message : '读取对比记录详情失败', 'error')
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setHistoryDetailLoadingId((previous) =>
+            previous === selectedHistoryId ? null : previous,
+          )
+        }
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [activeSection, compareHistoryDetailById, selectedHistoryId])
 
   useEffect(() => {
     if (!outputVisible || !outputBodyRef.current) {
@@ -579,6 +643,30 @@ function App() {
 
     outputBodyRef.current.scrollTop = outputBodyRef.current.scrollHeight
   }, [outputLogs, outputVisible])
+
+  useEffect(() => {
+    tabsRef.current = tabs
+  }, [tabs])
+
+  useEffect(() => {
+    const currentCompareId = dataCompareState.result?.compare_id ?? null
+    const previousCompareId = activeCompareCacheIdRef.current
+
+    if (previousCompareId && currentCompareId && previousCompareId !== currentCompareId) {
+      void cleanupDataCompareCache(previousCompareId)
+    }
+
+    activeCompareCacheIdRef.current = currentCompareId
+  }, [dataCompareState.result?.compare_id])
+
+  useEffect(() => {
+    return () => {
+      const compareId = activeCompareCacheIdRef.current
+      if (compareId) {
+        void cleanupDataCompareCache(compareId)
+      }
+    }
+  }, [])
 
   function pushToast(message: string, tone: ToastTone) {
     setToasts((previous) => [
@@ -628,6 +716,16 @@ function App() {
     } finally {
       setUninstallingPluginId(null)
     }
+  }
+
+  function handleSelectWorkspace(workspaceId: string) {
+    setActiveWorkspaceId(workspaceId)
+    setWorkspaceMenuOpen(false)
+  }
+
+  function handleOpenPluginManager() {
+    setWorkspaceMenuOpen(false)
+    setPluginManagerVisible(true)
   }
 
   function appendOutputLog(
@@ -687,12 +785,12 @@ function App() {
   }
 
   function removeTab(tabId: string) {
-    setTabs((previous) => previous.filter((tab) => tab.id !== tabId))
+    const remaining = tabsRef.current.filter((tab) => tab.id !== tabId)
+    setTabs(remaining)
     setActiveTabId((previous) => {
       if (previous !== tabId) {
         return previous
       }
-      const remaining = tabs.filter((tab) => tab.id !== tabId)
       return remaining.at(-1)?.id ?? ''
     })
   }
@@ -832,6 +930,12 @@ function App() {
     try {
       const history = await listCompareHistory(100)
       setCompareHistoryItems(history)
+      setCompareHistoryDetailById((previous) => {
+        const activeIds = new Set(history.map((item) => item.id))
+        return Object.fromEntries(
+          Object.entries(previous).filter(([historyId]) => activeIds.has(Number(historyId))),
+        )
+      })
     } catch (error) {
       pushToast(error instanceof Error ? error.message : '读取对比记录失败', 'error')
     }
@@ -1068,7 +1172,17 @@ function App() {
       }))
 
       const task = await startDataCompareTask(request)
-      const response = await waitForDataCompareTask(task.compare_id)
+      const response = await waitForCompareTask<DataCompareResponse>({
+        compareId: task.compare_id,
+        getProgress: getDataCompareTaskProgress,
+        getResult: getDataCompareTaskResult,
+        onProgress: (progress) => {
+          setDataCompareState((previous) => ({
+            ...previous,
+            task_progress: progress,
+          }))
+        },
+      })
       if (!response.result) {
         throw new Error(response.error_message ?? '数据对比未返回结果')
       }
@@ -1167,26 +1281,6 @@ function App() {
       )
     } catch (error) {
       pushToast(error instanceof Error ? error.message : '导出 SQL 失败', 'error')
-    }
-  }
-
-  async function waitForDataCompareTask(compareId: string) {
-    for (;;) {
-      const progress = await getDataCompareTaskProgress(compareId)
-      setDataCompareState((previous) => ({
-        ...previous,
-        task_progress: progress,
-      }))
-
-      if (
-        progress.status === 'completed' ||
-        progress.status === 'failed' ||
-        progress.status === 'canceled'
-      ) {
-        return getDataCompareTaskResult(compareId)
-      }
-
-      await new Promise((resolve) => window.setTimeout(resolve, 240))
     }
   }
 
@@ -1449,14 +1543,31 @@ function App() {
       setStructureCompareState((previous) => ({
         ...previous,
         loading: true,
+        task_progress: null,
       }))
 
-      const result = await runStructureCompare(request)
+      const task = await startStructureCompareTask(request)
+      const response = await waitForCompareTask<StructureCompareResponse>({
+        compareId: task.compare_id,
+        getProgress: getStructureCompareTaskProgress,
+        getResult: getStructureCompareTaskResult,
+        onProgress: (progress) => {
+          setStructureCompareState((previous) => ({
+            ...previous,
+            task_progress: progress,
+          }))
+        },
+      })
+      if (!response.result) {
+        throw new Error(response.error_message ?? '结构对比未返回结果')
+      }
+      const result = response.result
       const activeCategory = pickFirstStructureCategory(result)
 
       setStructureCompareState({
         current_step: 2,
         loading: false,
+        task_progress: null,
         result,
         current_request: request,
         selection_by_category: createStructureSelectionState(result),
@@ -1476,8 +1587,24 @@ function App() {
       await refreshCompareHistoryState()
       pushToast('结构对比完成', 'success')
     } catch (error) {
-      setStructureCompareState((previous) => ({ ...previous, loading: false }))
+      setStructureCompareState((previous) => ({
+        ...previous,
+        loading: false,
+        task_progress: null,
+      }))
       pushToast(error instanceof Error ? error.message : '结构对比失败', 'error')
+    }
+  }
+
+  async function cancelRunningStructureCompare() {
+    const compareId = structureCompareState.task_progress?.compare_id
+    if (!compareId) {
+      return
+    }
+    try {
+      await cancelStructureCompareTask(compareId)
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : '取消结构对比失败', 'error')
     }
   }
 
@@ -3912,12 +4039,15 @@ function App() {
     activeConsoleDatabaseKey && sqlAutocompleteByDatabase[activeConsoleDatabaseKey]
       ? sqlAutocompleteByDatabase[activeConsoleDatabaseKey]
       : null
-  const activeConsoleSchemas =
-    activeTab?.kind === 'console'
-      ? Object.entries(sqlAutocompleteByDatabase)
-          .filter(([key]) => key.startsWith(`${activeTab.profile_id}:`))
-          .map(([, schema]) => schema)
-      : []
+  const activeConsoleSchemas = useMemo(
+    () =>
+      activeTab?.kind === 'console'
+        ? Object.entries(sqlAutocompleteByDatabase)
+            .filter(([key]) => key.startsWith(`${activeTab.profile_id}:`))
+            .map(([, schema]) => schema)
+        : [],
+    [activeTab, sqlAutocompleteByDatabase],
+  )
   const selectedProfileId =
     selection.kind === 'profile'
       ? selection.profile_id
@@ -3928,33 +4058,59 @@ function App() {
         : ''
   const selectedProfile =
     profiles.find((profile) => profile.id === selectedProfileId) ?? null
-  const dataSourceTreeGroups = buildDataSourceTreeGroups(dataSourceGroups, profiles)
-  const filteredDataCompareTables =
-    dataCompareState.discovery?.common_tables.filter((tableName) =>
-      tableName.toLowerCase().includes(dataCompareState.table_filter.trim().toLowerCase()),
-    ) ?? []
-  const visibleHistoryItems = compareHistoryItems.filter(
-    (item) => item.history_type === compareHistoryType,
+  const dataSourceTreeGroups = useMemo(
+    () => buildDataSourceTreeGroups(dataSourceGroups, profiles),
+    [dataSourceGroups, profiles],
+  )
+  const filteredDataCompareTables = useMemo(() => {
+    const commonTables = dataCompareState.discovery?.common_tables
+    if (!commonTables) {
+      return []
+    }
+
+    const normalizedFilter = dataCompareState.table_filter.trim().toLowerCase()
+    if (!normalizedFilter) {
+      return commonTables
+    }
+
+    return commonTables.filter((tableName) =>
+      tableName.toLowerCase().includes(normalizedFilter),
+    )
+  }, [dataCompareState.discovery?.common_tables, dataCompareState.table_filter])
+  const selectedHistorySummary = useMemo(
+    () =>
+      visibleHistoryItems.find((item) => item.id === selectedHistoryId) ??
+      visibleHistoryItems[0] ??
+      null,
+    [selectedHistoryId, visibleHistoryItems],
   )
   const selectedHistoryItem =
-    visibleHistoryItems.find((item) => item.id === selectedHistoryId) ??
-    visibleHistoryItems[0] ??
-    null
-  const workspaceOptions = [
-    { id: databaseWorkspaceId, label: '数据库客户端' },
-    ...installedPlugins.map((plugin) => ({
-      id: `plugin:${plugin.id}`,
-      label: plugin.name,
-    })),
-  ]
+    selectedHistorySummary ? compareHistoryDetailById[selectedHistorySummary.id] ?? null : null
+  const workspaceOptions = useMemo(
+    () => [
+      { id: databaseWorkspaceId, label: 'MySQL客户端' },
+      { id: redisWorkspaceId, label: 'Redis客户端' },
+      ...installedPlugins.map((plugin) => ({
+        id: `plugin:${plugin.id}`,
+        label: plugin.name,
+      })),
+    ],
+    [installedPlugins],
+  )
   const activeWorkspaceLabel =
     workspaceOptions.find((workspace) => workspace.id === activeWorkspaceId)?.label ??
-    '数据库客户端'
-  const activePlugin =
-    activeWorkspaceId.startsWith('plugin:')
-      ? installedPlugins.find((plugin) => plugin.id === activeWorkspaceId.replace('plugin:', '')) ??
-        null
-      : null
+    'MySQL客户端'
+  const activePlugin = useMemo(() => {
+    if (!activeWorkspaceId.startsWith('plugin:')) {
+      return null
+    }
+
+    return (
+      installedPlugins.find(
+        (plugin) => plugin.id === activeWorkspaceId.replace('plugin:', ''),
+      ) ?? null
+    )
+  }, [activeWorkspaceId, installedPlugins])
   const collapseNavigationPane =
     activeSection === 'structure_compare' || activeSection === 'data_compare'
 
@@ -3970,92 +4126,36 @@ function App() {
         <header className="window-bar">
           <div className="window-bar-drag" data-tauri-drag-region></div>
           <div className="window-bar-content">
-            <div
-              className="workspace-switcher"
-              onClick={(event) => event.stopPropagation()}
-            >
-              <button
-                aria-expanded={workspaceMenuOpen}
-                aria-haspopup="menu"
-                className={`workspace-switcher-trigger ${workspaceMenuOpen ? 'open' : ''}`}
-                type="button"
-                onClick={() => setWorkspaceMenuOpen((previous) => !previous)}
-              >
-                <span className="workspace-switcher-name">{activeWorkspaceLabel}</span>
-                <span className="workspace-switcher-chevron" aria-hidden="true">
-                  ▾
-                </span>
-              </button>
-
-              {workspaceMenuOpen ? (
-                <div className="workspace-menu glass-card" role="menu">
-                  <div className="workspace-menu-section">
-                    <div className="workspace-menu-section-title">内置工作区</div>
-                    <button
-                      className={`workspace-menu-item ${
-                        activeWorkspaceId === databaseWorkspaceId ? 'active' : ''
-                      }`}
-                      role="menuitem"
-                      type="button"
-                      onClick={() => {
-                        setActiveWorkspaceId(databaseWorkspaceId)
-                        setWorkspaceMenuOpen(false)
-                      }}
-                    >
-                      <span>数据库客户端</span>
-                      <small>当前主工作区</small>
-                    </button>
-                  </div>
-
-                  <div className="workspace-menu-section">
-                    <div className="workspace-menu-section-title">已安装插件</div>
-                    {installedPlugins.length === 0 ? (
-                      <div className="workspace-menu-empty">
-                        暂无插件，可在下方进入管理页安装
-                      </div>
-                    ) : (
-                      installedPlugins.map((plugin) => (
-                        <button
-                          className={`workspace-menu-item ${
-                            activeWorkspaceId === `plugin:${plugin.id}` ? 'active' : ''
-                          }`}
-                          key={plugin.id}
-                          role="menuitem"
-                          type="button"
-                          onClick={() => {
-                            setActiveWorkspaceId(`plugin:${plugin.id}`)
-                            setWorkspaceMenuOpen(false)
-                          }}
-                        >
-                          <span>{plugin.name}</span>
-                          <small>{plugin.version}</small>
-                        </button>
-                      ))
-                    )}
-                  </div>
-
-                  <div className="workspace-menu-footer">
-                    <button
-                      className="workspace-menu-manage"
-                      role="menuitem"
-                      type="button"
-                      onClick={() => {
-                        setWorkspaceMenuOpen(false)
-                        setPluginManagerVisible(true)
-                      }}
-                    >
-                      管理插件
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-            </div>
+            <WorkspaceSwitcher
+              activeWorkspaceId={activeWorkspaceId}
+              activeWorkspaceLabel={activeWorkspaceLabel}
+              databaseWorkspaceId={databaseWorkspaceId}
+              installedPlugins={installedPlugins}
+              onManagePlugins={handleOpenPluginManager}
+              onSelectWorkspace={handleSelectWorkspace}
+              onToggleMenu={() => setWorkspaceMenuOpen((previous) => !previous)}
+              redisWorkspaceId={redisWorkspaceId}
+              workspaceMenuOpen={workspaceMenuOpen}
+            />
           </div>
         </header>
 
         {activePlugin ? (
           <section className="plugin-full-pane">
             <PluginWorkspace plugin={activePlugin} />
+          </section>
+        ) : activeWorkspaceId === redisWorkspaceId ? (
+          <section className="redis-full-pane">
+            <Suspense
+              fallback={
+                <WorkspaceLoadingState
+                  title="Redis客户端准备中"
+                  text="正在挂载 Redis 内置工作区。"
+                />
+              }
+            >
+              <RedisWorkspace />
+            </Suspense>
           </section>
         ) : (
         <div
@@ -4710,6 +4810,7 @@ function App() {
                   detailConcurrencyInput={structureDetailConcurrencyInput}
                   onDetailConcurrencyInputChange={setStructureDetailConcurrencyInput}
                   onExportSql={() => void exportSelectedStructureCompareSql()}
+                  onCancelCompare={() => void cancelRunningStructureCompare()}
                   onCategoryChange={(category) =>
                     setStructureCompareState((previous) => ({
                       ...previous,
@@ -4740,6 +4841,8 @@ function App() {
                 <CompareHistoryWorkspace
                   historyItems={visibleHistoryItems}
                   selectedHistoryItem={selectedHistoryItem}
+                  selectedHistorySummary={selectedHistorySummary}
+                  loadingHistoryDetail={historyDetailLoadingId === selectedHistorySummary?.id}
                   historyType={compareHistoryType}
                   onSelect={(historyId) => setSelectedHistoryId(historyId)}
                 />
@@ -5462,8 +5565,15 @@ function ProfileEditorView({
               type="password"
               value={tab.editor.form.password}
               onChange={(event) => onFieldChange(tab.id, 'password', event.target.value)}
-              placeholder="请输入密码"
+              placeholder={
+                tab.editor.mode === 'edit' ? '留空表示保持当前密码' : '请输入密码'
+              }
             />
+            <small className="form-hint">
+              {tab.editor.mode === 'edit'
+                ? '编辑已有数据源时，留空会继续使用本地已保存密码；只有输入新值时才会更新。'
+                : '首次保存时必须输入密码。'}
+            </small>
           </label>
         </div>
 

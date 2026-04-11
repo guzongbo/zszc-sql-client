@@ -24,6 +24,31 @@ use crate::{
     compare_core::utils::sql_builder::quote_identifier,
 };
 
+type ColumnMetadataTuple = (
+    String,
+    String,
+    u64,
+    String,
+    String,
+    Option<String>,
+    String,
+    Option<String>,
+    Option<String>,
+    String,
+    Option<String>,
+);
+
+type ForeignKeyMetadataTuple = (
+    String,
+    String,
+    u64,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Clone, Default)]
 pub struct StructureCompareService;
 
@@ -530,6 +555,7 @@ impl StructureCompareService {
         })
     }
 
+    #[allow(clippy::redundant_iter_cloned)]
     pub async fn export_sql_file(
         &self,
         request: &StructureExportSqlFileRequest,
@@ -1091,19 +1117,7 @@ async fn load_column_metadata_rows(
                 collation_name,
                 column_comment,
                 generation_expression,
-            ): (
-                String,
-                String,
-                u64,
-                String,
-                String,
-                Option<String>,
-                String,
-                Option<String>,
-                Option<String>,
-                String,
-                Option<String>,
-            )| ColumnMetadataRow {
+            ): ColumnMetadataTuple| ColumnMetadataRow {
                 table_name,
                 column_name,
                 ordinal_position,
@@ -1197,16 +1211,7 @@ async fn load_foreign_key_metadata_rows(
                 referenced_column_name,
                 update_rule,
                 delete_rule,
-            ): (
-                String,
-                String,
-                u64,
-                String,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-                Option<String>,
-            )| ForeignKeyMetadataRow {
+            ): ForeignKeyMetadataTuple| ForeignKeyMetadataRow {
                 table_name,
                 constraint_name,
                 ordinal_position,
@@ -1703,13 +1708,13 @@ fn build_alter_plan(
         }
     }
 
-    if primary_key_changed(source, target) {
-        if let Some(primary_key) = &source.primary_key {
-            statements.push(format!(
-                "ALTER TABLE {} ADD {};",
-                qualified_table, primary_key
-            ));
-        }
+    if primary_key_changed(source, target)
+        && let Some(primary_key) = &source.primary_key
+    {
+        statements.push(format!(
+            "ALTER TABLE {} ADD {};",
+            qualified_table, primary_key
+        ));
     }
 
     for (name, source_index) in &source.indexes {
@@ -1960,28 +1965,28 @@ fn build_table_option_statements(
 ) -> Vec<String> {
     let mut clauses = Vec::new();
 
-    if source.engine != target.engine {
-        if let Some(engine) = &source.engine {
-            clauses.push(format!("ENGINE = {}", engine));
-        }
+    if source.engine != target.engine
+        && let Some(engine) = &source.engine
+    {
+        clauses.push(format!("ENGINE = {}", engine));
     }
 
-    if source.default_charset != target.default_charset {
-        if let Some(default_charset) = &source.default_charset {
-            clauses.push(format!("DEFAULT CHARACTER SET = {}", default_charset));
-        }
+    if source.default_charset != target.default_charset
+        && let Some(default_charset) = &source.default_charset
+    {
+        clauses.push(format!("DEFAULT CHARACTER SET = {}", default_charset));
     }
 
-    if source.collation != target.collation {
-        if let Some(collation) = &source.collation {
-            clauses.push(format!("COLLATE = {}", collation));
-        }
+    if source.collation != target.collation
+        && let Some(collation) = &source.collation
+    {
+        clauses.push(format!("COLLATE = {}", collation));
     }
 
-    if source.row_format != target.row_format {
-        if let Some(row_format) = &source.row_format {
-            clauses.push(format!("ROW_FORMAT = {}", row_format));
-        }
+    if source.row_format != target.row_format
+        && let Some(row_format) = &source.row_format
+    {
+        clauses.push(format!("ROW_FORMAT = {}", row_format));
     }
 
     if source.comment != target.comment {
@@ -2045,32 +2050,32 @@ fn parse_create_table(create_sql: &str) -> Result<ParsedCreateTable, AppError> {
             continue;
         }
 
-        if is_index_fragment(&upper) {
-            if let Some(index_name) = extract_index_name(&trimmed) {
-                parsed
-                    .line_map
-                    .index_lines
-                    .insert(index_name.clone(), line_number);
-                parsed.indexes.insert(index_name, trimmed);
-                continue;
-            }
+        if is_index_fragment(&upper)
+            && let Some(index_name) = extract_index_name(&trimmed)
+        {
+            parsed
+                .line_map
+                .index_lines
+                .insert(index_name.clone(), line_number);
+            parsed.indexes.insert(index_name, trimmed);
+            continue;
         }
 
-        if upper.starts_with("CONSTRAINT ") {
-            if let Some(constraint_name) = extract_constraint_name(&trimmed) {
-                parsed
-                    .line_map
-                    .constraint_lines
-                    .insert(constraint_name.clone(), line_number);
-                parsed.constraints.insert(
-                    constraint_name.clone(),
-                    ConstraintFragment {
-                        kind: detect_constraint_kind(&upper),
-                        sql: trimmed,
-                    },
-                );
-                continue;
-            }
+        if upper.starts_with("CONSTRAINT ")
+            && let Some(constraint_name) = extract_constraint_name(&trimmed)
+        {
+            parsed
+                .line_map
+                .constraint_lines
+                .insert(constraint_name.clone(), line_number);
+            parsed.constraints.insert(
+                constraint_name.clone(),
+                ConstraintFragment {
+                    kind: detect_constraint_kind(&upper),
+                    sql: trimmed,
+                },
+            );
+            continue;
         }
     }
 

@@ -66,6 +66,141 @@ export type SaveConnectionProfilePayload = {
   password: string
 }
 
+export type RedisConnectionProfile = {
+  id: string
+  group_name: string | null
+  connection_name: string
+  host: string
+  port: number
+  username: string
+  password: string
+  database_index: number
+  connect_timeout_ms: number
+  created_at: string
+  updated_at: string
+}
+
+export type SaveRedisConnectionPayload = {
+  id?: string | null
+  group_name?: string | null
+  connection_name: string
+  host: string
+  port: number
+  username: string
+  password: string
+  database_index: number
+  connect_timeout_ms: number
+}
+
+export type RedisConnectionTestResult = {
+  server_version: string
+  database_index: number
+  key_count: number
+}
+
+export type RedisKeyType = 'all' | 'string' | 'hash' | 'list' | 'set' | 'zset' | 'stream'
+
+export type RedisScanKeysRequest = {
+  profile_id: string
+  database_index: number
+  pattern: string
+  cursor: string
+  limit: number
+  type_filter?: RedisKeyType | null
+}
+
+export type RedisKeySummary = {
+  key_name: string
+  type_name: string
+  ttl_seconds: number | null
+}
+
+export type RedisScanKeysResponse = {
+  cursor: string
+  keys: RedisKeySummary[]
+  has_more: boolean
+}
+
+export type RedisKeyDetailRequest = {
+  profile_id: string
+  database_index: number
+  key_name: string
+  offset: number
+  limit: number
+}
+
+export type RedisHashEntry = {
+  field: string
+  value: string
+}
+
+export type RedisListItem = {
+  index: number
+  value: string
+}
+
+export type RedisZSetEntry = {
+  member: string
+  score: number
+}
+
+export type RedisStreamEntry = {
+  entry_id: string
+  fields: RedisHashEntry[]
+}
+
+export type RedisKeyDetail = {
+  profile_id: string
+  database_index: number
+  key_name: string
+  type_name: string
+  ttl_seconds: number | null
+  length: number
+  string_value: string | null
+  hash_entries: RedisHashEntry[]
+  list_items: RedisListItem[]
+  set_members: string[]
+  zset_entries: RedisZSetEntry[]
+  stream_entries: RedisStreamEntry[]
+  truncated: boolean
+}
+
+export type RedisStringValuePayload = {
+  profile_id: string
+  database_index: number
+  key_name: string
+  value: string
+}
+
+export type RedisHashFieldPayload = {
+  profile_id: string
+  database_index: number
+  key_name: string
+  field: string
+  value: string
+}
+
+export type RedisDeleteHashFieldPayload = {
+  profile_id: string
+  database_index: number
+  key_name: string
+  field: string
+}
+
+export type RedisKeyIdentity = {
+  profile_id: string
+  database_index: number
+  key_name: string
+}
+
+export type RedisRenameKeyPayload = RedisKeyIdentity & {
+  new_key_name: string
+}
+
+export type RedisSetKeyTtlPayload = RedisKeyIdentity & {
+  ttl_seconds?: number | null
+}
+
 export type DataSourceGroup = {
   id: string
   group_name: string
@@ -255,6 +390,7 @@ export type CompareTaskStatus =
 export type CompareTaskPhase =
   | 'pending'
   | 'discover_tables'
+  | 'load_structure_metadata'
   | 'prepare_table'
   | 'table_checksum'
   | 'keyed_hash_scan'
@@ -285,12 +421,14 @@ export type CompareTaskProgressResponse = {
   error_message: string | null
 }
 
-export type CompareTaskResultResponse = {
+export type CompareTaskResultEnvelope<T> = {
   compare_id: string
   status: CompareTaskStatus
-  result: DataCompareResponse | null
+  result: T | null
   error_message: string | null
 }
+
+export type CompareTaskResultResponse = CompareTaskResultEnvelope<DataCompareResponse>
 
 export type CompareTaskCancelResponse = {
   compare_id: string
@@ -345,6 +483,9 @@ export type StructureCompareResponse = {
   deleted_tables: StructureTableItem[]
   performance: CompareHistoryPerformance
 }
+
+export type StructureCompareTaskResultResponse =
+  CompareTaskResultEnvelope<StructureCompareResponse>
 
 export type StructureDetailCategory = 'added' | 'modified' | 'deleted'
 
@@ -452,7 +593,7 @@ export type CompareHistoryTableDetail = {
   deleted_tables: string[]
 }
 
-export type CompareHistoryItem = {
+export type CompareHistorySummary = {
   id: number
   history_type: CompareHistoryType
   source_profile_id: string | null
@@ -462,9 +603,6 @@ export type CompareHistoryItem = {
   target_data_source_name: string
   target_database: string
   table_mode: string
-  selected_tables: string[]
-  table_detail: CompareHistoryTableDetail
-  performance: CompareHistoryPerformance
   source_table_count: number
   target_table_count: number
   total_tables: number
@@ -475,10 +613,20 @@ export type CompareHistoryItem = {
   structure_added_count: number
   structure_modified_count: number
   structure_deleted_count: number
+  total_elapsed_ms: number
   created_at: string
 }
 
-export type CompareHistoryInput = Omit<CompareHistoryItem, 'id' | 'created_at'>
+export type CompareHistoryItem = CompareHistorySummary & {
+  selected_tables: string[]
+  table_detail: CompareHistoryTableDetail
+  performance: CompareHistoryPerformance
+}
+
+export type CompareHistoryInput = Omit<
+  CompareHistoryItem,
+  'id' | 'created_at' | 'total_elapsed_ms'
+>
 
 export type TableEntry = {
   name: string

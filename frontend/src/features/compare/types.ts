@@ -67,6 +67,7 @@ export type StructureCompareDetailCacheItem = {
 export type StructureCompareState = {
   current_step: CompareWorkflowStep
   loading: boolean
+  task_progress: CompareTaskProgressResponse | null
   result: StructureCompareResponse | null
   current_request: StructureCompareRequest | null
   selection_by_category: Record<StructureDetailCategory, string[]>

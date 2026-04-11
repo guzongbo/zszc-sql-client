@@ -46,6 +46,181 @@ pub struct SaveConnectionProfilePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct RedisConnectionProfile {
+    pub id: String,
+    pub group_name: Option<String>,
+    pub connection_name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database_index: u16,
+    pub connect_timeout_ms: u64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct SaveRedisConnectionPayload {
+    pub id: Option<String>,
+    pub group_name: Option<String>,
+    pub connection_name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub password: String,
+    pub database_index: u16,
+    pub connect_timeout_ms: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisConnectionTestResult {
+    pub server_version: String,
+    pub database_index: u16,
+    pub key_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisScanKeysRequest {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub pattern: String,
+    pub cursor: String,
+    pub limit: u32,
+    pub type_filter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisKeySummary {
+    pub key_name: String,
+    pub type_name: String,
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisScanKeysResponse {
+    pub cursor: String,
+    pub keys: Vec<RedisKeySummary>,
+    pub has_more: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisKeyDetailRequest {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub offset: u32,
+    pub limit: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisHashEntry {
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisListItem {
+    pub index: i64,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisZSetEntry {
+    pub member: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisStreamEntry {
+    pub entry_id: String,
+    pub fields: Vec<RedisHashEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisKeyDetail {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub type_name: String,
+    pub ttl_seconds: Option<i64>,
+    pub length: u64,
+    pub string_value: Option<String>,
+    pub hash_entries: Vec<RedisHashEntry>,
+    pub list_items: Vec<RedisListItem>,
+    pub set_members: Vec<String>,
+    pub zset_entries: Vec<RedisZSetEntry>,
+    pub stream_entries: Vec<RedisStreamEntry>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisStringValuePayload {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisHashFieldPayload {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub field: String,
+    pub value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisDeleteHashFieldPayload {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub field: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisKeyIdentity {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisRenameKeyPayload {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub new_key_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct RedisSetKeyTtlPayload {
+    pub profile_id: String,
+    pub database_index: u16,
+    pub key_name: String,
+    pub ttl_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct DataSourceGroup {
     pub id: String,
     pub group_name: String,
@@ -773,6 +948,7 @@ pub enum CompareTaskStatus {
 pub enum CompareTaskPhase {
     Pending,
     DiscoverTables,
+    LoadStructureMetadata,
     PrepareTable,
     TableChecksum,
     KeyedHashScan,
@@ -816,6 +992,15 @@ pub struct CompareTaskResultResponse {
     pub compare_id: String,
     pub status: CompareTaskStatus,
     pub result: Option<DataCompareResponse>,
+    pub error_message: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct StructureCompareTaskResultResponse {
+    pub compare_id: String,
+    pub status: CompareTaskStatus,
+    pub result: Option<StructureCompareResponse>,
     pub error_message: Option<String>,
 }
 
@@ -1058,6 +1243,32 @@ pub struct CompareHistoryTableDetail {
     pub added_tables: Vec<String>,
     pub modified_tables: Vec<String>,
     pub deleted_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CompareHistorySummary {
+    pub id: i64,
+    pub history_type: CompareHistoryType,
+    pub source_profile_id: Option<String>,
+    pub source_data_source_name: String,
+    pub source_database: String,
+    pub target_profile_id: Option<String>,
+    pub target_data_source_name: String,
+    pub target_database: String,
+    pub table_mode: String,
+    pub source_table_count: usize,
+    pub target_table_count: usize,
+    pub total_tables: usize,
+    pub compared_tables: usize,
+    pub insert_count: usize,
+    pub update_count: usize,
+    pub delete_count: usize,
+    pub structure_added_count: usize,
+    pub structure_modified_count: usize,
+    pub structure_deleted_count: usize,
+    pub total_elapsed_ms: u64,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

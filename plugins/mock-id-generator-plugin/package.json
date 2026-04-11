@@ -1,0 +1,11 @@
+{
+  "name": "mock-id-generator-plugin-builder",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "package": "node package-plugin.mjs"
+  },
+  "devDependencies": {
+    "fflate": "^0.8.2"
+  }
+}

@@ -761,6 +761,9 @@ export const mockApi = {
       app_name: 'ZSZC SQL Client',
       storage_engine: 'sqlite',
       app_data_dir: '/mock/zszc-sql-client',
+      current_platform: 'darwin-aarch64',
+      plugin_package_extension: 'zszc-plugin',
+      installed_plugins: [],
       connection_profiles: connectionProfiles,
       data_source_groups: sortDataSourceGroups(dataSourceGroups),
     }

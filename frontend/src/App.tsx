@@ -34,7 +34,9 @@ import {
   getDataCompareTaskProgress,
   getDataCompareTaskResult,
   getTableDdl,
+  installPluginFromDisk,
   importNavicatConnectionProfiles,
+  listInstalledPlugins,
   listCompareHistory,
   listDatabaseTables,
   listProfileDatabases,
@@ -51,6 +53,7 @@ import {
   saveConnectionProfile,
   startDataCompareTask,
   testConnectionProfile,
+  uninstallPlugin,
   writeClipboardText,
 } from './api'
 import {
@@ -82,6 +85,8 @@ import {
 } from './features/table-data/dataMutations'
 import type { ConsoleTab, DataGridRow, DataTab } from './features/workspace/types'
 import { EmptyNotice } from './shared/components/EmptyNotice'
+import { PluginManagerModal } from './features/plugins/PluginManagerModal'
+import { PluginWorkspace } from './features/plugins/PluginWorkspace'
 import type {
   AssignProfilesToDataSourceGroupResult,
   AppBootstrap,
@@ -99,6 +104,7 @@ import type {
   DataCompareRequest,
   DataCompareResponse,
   DataSourceGroup,
+  InstalledPlugin,
   JsonRecord,
   LoadTableDataPayload,
   SaveConnectionProfilePayload,
@@ -293,6 +299,7 @@ type DataSourceTreeGroup = {
 }
 
 const ungroupedGroupName = '未分组'
+const databaseWorkspaceId = 'workspace:database'
 const commonDataTypes = [
   'bigint',
   'int',
@@ -414,6 +421,14 @@ const CompareHistoryWorkspace = lazy(() =>
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
   const [bootstrapError, setBootstrapError] = useState('')
+  const [currentPlatform, setCurrentPlatform] = useState('')
+  const [pluginPackageExtension, setPluginPackageExtension] = useState('zszc-plugin')
+  const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(databaseWorkspaceId)
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
+  const [pluginManagerVisible, setPluginManagerVisible] = useState(false)
+  const [pluginManagerBusy, setPluginManagerBusy] = useState(false)
+  const [uninstallingPluginId, setUninstallingPluginId] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<RailSection>('datasource')
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([])
   const [dataSourceGroups, setDataSourceGroups] = useState<DataSourceGroup[]>([])
@@ -479,6 +494,9 @@ function App() {
 
         const nextProfiles = sortProfiles(payload.connection_profiles)
         setBootstrap(payload)
+        setCurrentPlatform(payload.current_platform)
+        setPluginPackageExtension(payload.plugin_package_extension)
+        setInstalledPlugins(payload.installed_plugins)
         setProfiles(nextProfiles)
         setDataSourceGroups(sortDataSourceGroups(payload.data_source_groups))
         setExpandedKeys(new Set())
@@ -499,6 +517,17 @@ function App() {
       cancelled = true
     }
   }, [])
+
+  useEffect(() => {
+    if (activeWorkspaceId === databaseWorkspaceId) {
+      return
+    }
+
+    const pluginId = activeWorkspaceId.replace('plugin:', '')
+    if (!installedPlugins.some((plugin) => plugin.id === pluginId)) {
+      setActiveWorkspaceId(databaseWorkspaceId)
+    }
+  }, [activeWorkspaceId, installedPlugins])
 
   useEffect(() => {
     setTabs((previous) =>
@@ -556,6 +585,49 @@ function App() {
       ...previous,
       { id: `${Date.now()}-${previous.length}`, tone, message },
     ])
+  }
+
+  async function refreshInstalledPluginState() {
+    const plugins = await listInstalledPlugins()
+    setInstalledPlugins(plugins)
+  }
+
+  async function handleInstallPlugin() {
+    setPluginManagerBusy(true)
+    try {
+      const result = await installPluginFromDisk()
+      if (result.canceled || !result.plugin) {
+        return
+      }
+
+      await refreshInstalledPluginState()
+      setActiveWorkspaceId(`plugin:${result.plugin.id}`)
+      setWorkspaceMenuOpen(false)
+      setPluginManagerVisible(false)
+      pushToast(`插件 ${result.plugin.name} 安装成功`, 'success')
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : '插件安装失败', 'error')
+    } finally {
+      setPluginManagerBusy(false)
+    }
+  }
+
+  async function handleUninstallPlugin(pluginId: string) {
+    const plugin = installedPlugins.find((item) => item.id === pluginId)
+    setUninstallingPluginId(pluginId)
+    try {
+      await uninstallPlugin(pluginId)
+      await refreshInstalledPluginState()
+      if (activeWorkspaceId === `plugin:${pluginId}`) {
+        setActiveWorkspaceId(databaseWorkspaceId)
+      }
+      setWorkspaceMenuOpen(false)
+      pushToast(`插件 ${plugin?.name ?? pluginId} 已卸载`, 'success')
+    } catch (error) {
+      pushToast(error instanceof Error ? error.message : '插件卸载失败', 'error')
+    } finally {
+      setUninstallingPluginId(null)
+    }
   }
 
   function appendOutputLog(
@@ -3868,17 +3940,124 @@ function App() {
     visibleHistoryItems.find((item) => item.id === selectedHistoryId) ??
     visibleHistoryItems[0] ??
     null
+  const workspaceOptions = [
+    { id: databaseWorkspaceId, label: '数据库客户端' },
+    ...installedPlugins.map((plugin) => ({
+      id: `plugin:${plugin.id}`,
+      label: plugin.name,
+    })),
+  ]
+  const activeWorkspaceLabel =
+    workspaceOptions.find((workspace) => workspace.id === activeWorkspaceId)?.label ??
+    '数据库客户端'
+  const activePlugin =
+    activeWorkspaceId.startsWith('plugin:')
+      ? installedPlugins.find((plugin) => plugin.id === activeWorkspaceId.replace('plugin:', '')) ??
+        null
+      : null
   const collapseNavigationPane =
     activeSection === 'structure_compare' || activeSection === 'data_compare'
 
   return (
-    <main className="app-shell" onClick={() => setTreeContextMenu(null)}>
-      <div className="titlebar" data-tauri-drag-region></div>
+    <main
+      className="app-shell"
+      onClick={() => {
+        setTreeContextMenu(null)
+        setWorkspaceMenuOpen(false)
+      }}
+    >
       <section className="workspace-shell">
-        <header
-          className="window-bar"
-        />
+        <header className="window-bar">
+          <div className="window-bar-drag" data-tauri-drag-region></div>
+          <div className="window-bar-content">
+            <div
+              className="workspace-switcher"
+              onClick={(event) => event.stopPropagation()}
+            >
+              <button
+                aria-expanded={workspaceMenuOpen}
+                aria-haspopup="menu"
+                className={`workspace-switcher-trigger ${workspaceMenuOpen ? 'open' : ''}`}
+                type="button"
+                onClick={() => setWorkspaceMenuOpen((previous) => !previous)}
+              >
+                <span className="workspace-switcher-name">{activeWorkspaceLabel}</span>
+                <span className="workspace-switcher-chevron" aria-hidden="true">
+                  ▾
+                </span>
+              </button>
 
+              {workspaceMenuOpen ? (
+                <div className="workspace-menu glass-card" role="menu">
+                  <div className="workspace-menu-section">
+                    <div className="workspace-menu-section-title">内置工作区</div>
+                    <button
+                      className={`workspace-menu-item ${
+                        activeWorkspaceId === databaseWorkspaceId ? 'active' : ''
+                      }`}
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setActiveWorkspaceId(databaseWorkspaceId)
+                        setWorkspaceMenuOpen(false)
+                      }}
+                    >
+                      <span>数据库客户端</span>
+                      <small>当前主工作区</small>
+                    </button>
+                  </div>
+
+                  <div className="workspace-menu-section">
+                    <div className="workspace-menu-section-title">已安装插件</div>
+                    {installedPlugins.length === 0 ? (
+                      <div className="workspace-menu-empty">
+                        暂无插件，可在下方进入管理页安装
+                      </div>
+                    ) : (
+                      installedPlugins.map((plugin) => (
+                        <button
+                          className={`workspace-menu-item ${
+                            activeWorkspaceId === `plugin:${plugin.id}` ? 'active' : ''
+                          }`}
+                          key={plugin.id}
+                          role="menuitem"
+                          type="button"
+                          onClick={() => {
+                            setActiveWorkspaceId(`plugin:${plugin.id}`)
+                            setWorkspaceMenuOpen(false)
+                          }}
+                        >
+                          <span>{plugin.name}</span>
+                          <small>{plugin.version}</small>
+                        </button>
+                      ))
+                    )}
+                  </div>
+
+                  <div className="workspace-menu-footer">
+                    <button
+                      className="workspace-menu-manage"
+                      role="menuitem"
+                      type="button"
+                      onClick={() => {
+                        setWorkspaceMenuOpen(false)
+                        setPluginManagerVisible(true)
+                      }}
+                    >
+                      管理插件
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </header>
+
+        {activePlugin ? (
+          <section className="plugin-full-pane">
+            <PluginWorkspace plugin={activePlugin} />
+          </section>
+        ) : (
         <div
           className={`workspace-layout ${collapseNavigationPane ? 'workspace-layout-collapsed' : ''}`}
         >
@@ -4568,7 +4747,26 @@ function App() {
             )}
           </section>
         </div>
+        )}
       </section>
+
+      {pluginManagerVisible ? (
+        <PluginManagerModal
+          currentPlatform={currentPlatform}
+          installedPlugins={installedPlugins}
+          packageExtension={pluginPackageExtension}
+          selectedWorkspaceId={activeWorkspaceId}
+          busy={pluginManagerBusy}
+          uninstallingPluginId={uninstallingPluginId}
+          onClose={() => setPluginManagerVisible(false)}
+          onInstall={handleInstallPlugin}
+          onOpenPlugin={(pluginId) => {
+            setActiveWorkspaceId(`plugin:${pluginId}`)
+            setPluginManagerVisible(false)
+          }}
+          onUninstallPlugin={handleUninstallPlugin}
+        />
+      ) : null}
 
       {ddlDialog ? (
         <Modal

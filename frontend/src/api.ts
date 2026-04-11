@@ -38,6 +38,10 @@ import type {
   LoadSqlAutocompletePayload,
   LoadTableDataPayload,
   MutationResult,
+  InstalledPlugin,
+  PluginFrontendDocument,
+  PluginInstallDialogResult,
+  PluginOperationResult,
   RenameDataSourceGroupPayload,
   RenameDataSourceGroupResult,
   SaveConnectionProfilePayload,
@@ -346,6 +350,56 @@ export async function addCompareHistory(
     return mockApi.addCompareHistory(payload)
   }
   return invokeCommand<CompareHistoryItem>('compare_history_add', { payload })
+}
+
+export async function listInstalledPlugins(): Promise<InstalledPlugin[]> {
+  if (!isDesktopShell()) {
+    return []
+  }
+  return invokeCommand<InstalledPlugin[]>('plugins_list_installed')
+}
+
+export async function installPluginFromDisk(): Promise<PluginInstallDialogResult> {
+  if (!isDesktopShell()) {
+    throw new Error('当前不是桌面端环境')
+  }
+  return invokeCommand<PluginInstallDialogResult>('plugins_install_from_disk')
+}
+
+export async function uninstallPlugin(pluginId: string): Promise<PluginOperationResult> {
+  if (!isDesktopShell()) {
+    throw new Error('当前不是桌面端环境')
+  }
+  return invokeCommand<PluginOperationResult>('plugins_uninstall', { pluginId })
+}
+
+export async function readPluginFrontendEntry(
+  pluginId: string,
+): Promise<PluginFrontendDocument> {
+  if (!isDesktopShell()) {
+    throw new Error('当前不是桌面端环境')
+  }
+  return invokeCommand<PluginFrontendDocument>('plugins_read_frontend_entry', {
+    pluginId,
+  })
+}
+
+export async function invokePluginBackend<T>(
+  pluginId: string,
+  method: string,
+  params: unknown = null,
+): Promise<T> {
+  if (!isDesktopShell()) {
+    throw new Error('当前不是桌面端环境')
+  }
+  const response = await invokeCommand<{ result: T }>('plugins_backend_rpc', {
+    payload: {
+      plugin_id: pluginId,
+      method,
+      params,
+    },
+  })
+  return response.result
 }
 
 export async function listTableColumns(

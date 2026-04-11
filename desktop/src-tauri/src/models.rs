@@ -11,6 +11,9 @@ pub struct AppBootstrap {
     pub app_name: String,
     pub storage_engine: String,
     pub app_data_dir: String,
+    pub current_platform: String,
+    pub plugin_package_extension: String,
+    pub installed_plugins: Vec<InstalledPlugin>,
     pub connection_profiles: Vec<ConnectionProfile>,
     pub data_source_groups: Vec<DataSourceGroup>,
 }
@@ -1109,4 +1112,84 @@ pub struct CompareHistoryInput {
     pub structure_added_count: usize,
     pub structure_modified_count: usize,
     pub structure_deleted_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginBackendManifest {
+    pub required: bool,
+    pub startup: String,
+    pub entry_by_platform: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginManifest {
+    pub schema_version: u32,
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub kind: String,
+    pub description: String,
+    pub icon: Option<String>,
+    pub frontend_entry: String,
+    pub workspace_mode: String,
+    pub backend: PluginBackendManifest,
+    pub permissions: Vec<String>,
+    pub host_api_version: u32,
+    pub min_host_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct InstalledPlugin {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub kind: String,
+    pub description: String,
+    pub install_dir: String,
+    pub data_dir: String,
+    pub icon_path: Option<String>,
+    pub frontend_entry_path: String,
+    pub workspace_mode: String,
+    pub current_platform: String,
+    pub supported_platforms: Vec<String>,
+    pub current_platform_supported: bool,
+    pub backend_required: bool,
+    pub permissions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginFrontendDocument {
+    pub html: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginInstallDialogResult {
+    pub canceled: bool,
+    pub plugin: Option<InstalledPlugin>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginOperationResult {
+    pub plugin_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginBackendRpcRequest {
+    pub plugin_id: String,
+    pub method: String,
+    #[serde(default)]
+    pub params: JsonValue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PluginBackendRpcResponse {
+    pub result: JsonValue,
 }

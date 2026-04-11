@@ -12,14 +12,17 @@ use crate::models::{
     ExportQueryResultFileRequest, ExportQueryResultSqlTextRequest, ExportSqlFileRequest,
     ExportSqlFileResponse, ExportSqlTextResponse, ExportTableDataFileRequest,
     ExportTableDataSqlTextRequest, ImportConnectionProfilesResult, LoadSqlAutocompletePayload,
-    LoadTableDataPayload, MutationResult, RenameDataSourceGroupPayload,
-    RenameDataSourceGroupResult, SaveConnectionProfilePayload, SaveFileDialogResult,
-    SqlAutocompleteSchema, SqlConsoleResult, SqlPreview, StructureCompareDetailRequest,
-    StructureCompareDetailResponse, StructureCompareRequest, StructureCompareResponse,
-    StructureExportSqlFileRequest, StructureExportSqlFileResponse, TableColumnSummary,
-    TableDataPage, TableDdl, TableDesign, TableDesignMutationPayload, TableEntry, TableIdentity,
+    LoadTableDataPayload, MutationResult, PluginBackendRpcRequest, PluginBackendRpcResponse,
+    PluginFrontendDocument, PluginInstallDialogResult, PluginOperationResult,
+    RenameDataSourceGroupPayload, RenameDataSourceGroupResult, SaveConnectionProfilePayload,
+    SaveFileDialogResult, SqlAutocompleteSchema, SqlConsoleResult, SqlPreview,
+    StructureCompareDetailRequest, StructureCompareDetailResponse, StructureCompareRequest,
+    StructureCompareResponse, StructureExportSqlFileRequest, StructureExportSqlFileResponse,
+    TableColumnSummary, TableDataPage, TableDdl, TableDesign, TableDesignMutationPayload,
+    TableEntry, TableIdentity,
 };
 use crate::navicat::parse_navicat_connections;
+use crate::plugin_host::{PLUGIN_PACKAGE_EXTENSION, empty_install_dialog_result};
 use anyhow::{Result, anyhow};
 use arboard::Clipboard;
 use rfd::FileDialog;
@@ -38,11 +41,18 @@ pub fn get_app_bootstrap(state: State<'_, AppState>) -> Result<AppBootstrap, Str
         .local_store
         .list_data_source_groups()
         .map_err(to_error_message)?;
+    let installed_plugins = state
+        .plugin_host
+        .list_installed_plugins()
+        .map_err(to_error_message)?;
 
     Ok(AppBootstrap {
         app_name: state.app_name.clone(),
         storage_engine: "sqlite".to_string(),
         app_data_dir: state.app_data_dir.display().to_string(),
+        current_platform: state.plugin_host.current_platform().to_string(),
+        plugin_package_extension: PLUGIN_PACKAGE_EXTENSION.to_string(),
+        installed_plugins,
         connection_profiles: profiles,
         data_source_groups: groups,
     })
@@ -421,6 +431,76 @@ pub fn files_choose_export_path(
     payload: Option<ChooseFilePayload>,
 ) -> Result<SaveFileDialogResult, String> {
     save_file_with_dialog(payload, &[("CSV File", &["csv"]), ("JSON File", &["json"])])
+}
+
+#[tauri::command]
+pub fn plugins_list_installed(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::models::InstalledPlugin>, String> {
+    state
+        .plugin_host
+        .list_installed_plugins()
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn plugins_install_from_disk(
+    state: State<'_, AppState>,
+) -> Result<PluginInstallDialogResult, String> {
+    let Some(package_path) = FileDialog::new()
+        .add_filter("ZSZC Plugin", &[PLUGIN_PACKAGE_EXTENSION])
+        .pick_file()
+    else {
+        return Ok(empty_install_dialog_result());
+    };
+
+    let plugin = state
+        .plugin_host
+        .install_from_package(&package_path)
+        .map_err(to_error_message)?;
+
+    Ok(PluginInstallDialogResult {
+        canceled: false,
+        plugin: Some(plugin),
+    })
+}
+
+#[tauri::command]
+pub fn plugins_uninstall(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<PluginOperationResult, String> {
+    state
+        .plugin_host
+        .uninstall(&plugin_id)
+        .map_err(to_error_message)?;
+
+    Ok(PluginOperationResult { plugin_id })
+}
+
+#[tauri::command]
+pub fn plugins_read_frontend_entry(
+    state: State<'_, AppState>,
+    plugin_id: String,
+) -> Result<PluginFrontendDocument, String> {
+    state
+        .plugin_host
+        .read_frontend_document(&plugin_id)
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn plugins_backend_rpc(
+    state: State<'_, AppState>,
+    payload: PluginBackendRpcRequest,
+) -> Result<PluginBackendRpcResponse, String> {
+    let result = state
+        .plugin_host
+        .backend_rpc(&payload.plugin_id, &payload.method, payload.params)
+        .await
+        .map_err(to_error_message)?;
+
+    Ok(PluginBackendRpcResponse { result })
 }
 
 #[tauri::command]

@@ -6,8 +6,42 @@ export type AppBootstrap = {
   app_name: string
   storage_engine: string
   app_data_dir: string
+  current_platform: string
+  plugin_package_extension: string
+  installed_plugins: InstalledPlugin[]
   connection_profiles: ConnectionProfile[]
   data_source_groups: DataSourceGroup[]
+}
+
+export type InstalledPlugin = {
+  id: string
+  name: string
+  version: string
+  kind: string
+  description: string
+  install_dir: string
+  data_dir: string
+  icon_path: string | null
+  frontend_entry_path: string
+  workspace_mode: string
+  current_platform: string
+  supported_platforms: string[]
+  current_platform_supported: boolean
+  backend_required: boolean
+  permissions: string[]
+}
+
+export type PluginInstallDialogResult = {
+  canceled: boolean
+  plugin: InstalledPlugin | null
+}
+
+export type PluginOperationResult = {
+  plugin_id: string
+}
+
+export type PluginFrontendDocument = {
+  html: string
 }
 
 export type ConnectionProfile = {

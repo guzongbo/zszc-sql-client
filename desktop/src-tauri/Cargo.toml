@@ -23,10 +23,11 @@ serde_json = "1"
 sha1 = "0.10"
 tauri = { version = "2.10.3", features = ["macos-private-api"] }
 thiserror = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1", features = ["io-util", "macros", "process", "rt-multi-thread", "sync"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
 
 [build-dependencies]
 tauri-build = { version = "2.5.6", features = [] }

@@ -7,6 +7,7 @@ mod local_store;
 mod models;
 mod mysql_service;
 mod navicat;
+mod plugin_host;
 mod structure_compare_service;
 
 use crate::app_state::AppState;
@@ -149,6 +150,11 @@ fn main() {
             commands::execute_sql,
             commands::export_query_result_file,
             commands::export_query_result_sql_text,
+            commands::plugins_list_installed,
+            commands::plugins_install_from_disk,
+            commands::plugins_uninstall,
+            commands::plugins_read_frontend_entry,
+            commands::plugins_backend_rpc,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");
@@ -158,6 +164,9 @@ fn main() {
             if let Some(state) = app_handle.try_state::<AppState>() {
                 if let Err(error) = state.mysql_service.disconnect_all() {
                     warn!(error = %error, "failed to disconnect mysql pools before exit");
+                }
+                if let Err(error) = tauri::async_runtime::block_on(state.plugin_host.stop_all()) {
+                    warn!(error = %error, "failed to stop plugin runtimes before exit");
                 }
             }
         }

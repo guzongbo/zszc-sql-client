@@ -41,6 +41,13 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Cache Rust dependencies and build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-${{ runner.os }}-desktop
+          workspaces: |
+            . -> target
+
       - name: Install frontend dependencies
         run: npm ci --prefix frontend
 

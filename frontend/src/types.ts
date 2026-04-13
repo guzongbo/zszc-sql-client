@@ -13,6 +13,11 @@ export type AppBootstrap = {
   data_source_groups: DataSourceGroup[]
 }
 
+export type RuntimeMetrics = {
+  cpu_percent: number
+  memory_mb: number
+}
+
 export type InstalledPlugin = {
   id: string
   name: string

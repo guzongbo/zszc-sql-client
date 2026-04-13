@@ -20,6 +20,13 @@ pub struct AppBootstrap {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct RuntimeMetrics {
+    pub cpu_percent: f32,
+    pub memory_mb: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct ConnectionProfile {
     pub id: String,
     pub group_name: Option<String>,

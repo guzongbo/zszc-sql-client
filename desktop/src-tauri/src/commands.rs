@@ -18,7 +18,7 @@ use crate::models::{
     RedisHashFieldPayload, RedisKeyDetail, RedisKeyDetailRequest, RedisKeyIdentity,
     RedisRenameKeyPayload, RedisScanKeysRequest, RedisScanKeysResponse, RedisSetKeyTtlPayload,
     RedisStringValuePayload, RenameDataSourceGroupPayload, RenameDataSourceGroupResult,
-    SaveConnectionProfilePayload, SaveFileDialogResult, SaveRedisConnectionPayload,
+    RuntimeMetrics, SaveConnectionProfilePayload, SaveFileDialogResult, SaveRedisConnectionPayload,
     SqlAutocompleteSchema, SqlConsoleResult, SqlPreview, StructureCompareDetailRequest,
     StructureCompareDetailResponse, StructureCompareRequest, StructureCompareResponse,
     StructureCompareTaskResultResponse, StructureExportSqlFileRequest,
@@ -63,6 +63,14 @@ pub fn get_app_bootstrap(state: State<'_, AppState>) -> Result<AppBootstrap, Str
         connection_profiles: profiles,
         data_source_groups: groups,
     })
+}
+
+#[tauri::command]
+pub fn get_runtime_metrics(state: State<'_, AppState>) -> Result<RuntimeMetrics, String> {
+    state
+        .runtime_metrics_service
+        .snapshot()
+        .map_err(to_error_message)
 }
 
 #[tauri::command]

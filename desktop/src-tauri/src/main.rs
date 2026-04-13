@@ -9,6 +9,7 @@ mod mysql_service;
 mod navicat;
 mod plugin_host;
 mod redis_service;
+mod runtime_metrics;
 mod structure_compare_service;
 
 use crate::app_state::AppState;
@@ -107,6 +108,7 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_bootstrap,
+            commands::get_runtime_metrics,
             commands::create_data_source_group,
             commands::rename_data_source_group,
             commands::delete_data_source_group,

@@ -4,6 +4,7 @@ use crate::local_store::LocalStore;
 use crate::mysql_service::MysqlService;
 use crate::plugin_host::PluginHost;
 use crate::redis_service::RedisService;
+use crate::runtime_metrics::RuntimeMetricsService;
 use crate::structure_compare_service::StructureCompareService;
 use anyhow::Result;
 use std::path::PathBuf;
@@ -21,6 +22,7 @@ pub struct AppState {
     pub compare_tasks: DataCompareTaskManager,
     pub structure_compare_tasks: StructureCompareTaskManager,
     pub plugin_host: Arc<PluginHost>,
+    pub runtime_metrics_service: Arc<RuntimeMetricsService>,
 }
 
 impl AppState {
@@ -40,6 +42,7 @@ impl AppState {
             compare_tasks: DataCompareTaskManager::default(),
             structure_compare_tasks: StructureCompareTaskManager::default(),
             plugin_host: Arc::new(PluginHost::new(app_data_dir.clone())?),
+            runtime_metrics_service: Arc::new(RuntimeMetricsService::new()?),
         })
     }
 }

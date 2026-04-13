@@ -1,6 +1,7 @@
 import {
   Suspense,
   lazy,
+  useDeferredValue,
   useEffect,
   useMemo,
   useRef,
@@ -37,6 +38,7 @@ import {
   getCompareHistoryDetail,
   getDataCompareTaskProgress,
   getDataCompareTaskResult,
+  getRuntimeMetrics,
   getStructureCompareTaskProgress,
   getStructureCompareTaskResult,
   getTableDdl,
@@ -117,6 +119,7 @@ import type {
   JsonRecord,
   LoadTableDataPayload,
   SaveConnectionProfilePayload,
+  RuntimeMetrics,
   SqlAutocompleteSchema,
   StructureCompareRequest,
   StructureCompareResponse,
@@ -307,6 +310,29 @@ type DataSourceTreeGroup = {
   profiles: ConnectionProfile[]
 }
 
+type NavigationTreeTable = {
+  entry: TableEntry
+}
+
+type NavigationTreeDatabase = {
+  entry: DatabaseEntry
+  matched_by_name: boolean
+  tables: NavigationTreeTable[]
+}
+
+type NavigationTreeProfile = {
+  entry: ConnectionProfile
+  matched_by_name: boolean
+  databases: NavigationTreeDatabase[]
+}
+
+type NavigationTreeGroup = {
+  key: string
+  group_id: string | null
+  group_name: string
+  profiles: NavigationTreeProfile[]
+}
+
 const ungroupedGroupName = '未分组'
 const databaseWorkspaceId = 'workspace:database'
 const redisWorkspaceId = 'workspace:redis'
@@ -359,6 +385,7 @@ function createGroupAssignmentState(groupId: string): GroupAssignmentTabState {
 }
 
 type RailSection = 'datasource' | 'structure_compare' | 'data_compare' | 'compare_history'
+type WorkspacePanelKey = 'left' | 'right' | 'bottom'
 
 const defaultCompareForm: CompareFormState = {
   source_profile_id: '',
@@ -438,6 +465,7 @@ const RedisWorkspace = lazy(() =>
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
   const [bootstrapError, setBootstrapError] = useState('')
+  const [runtimeMetrics, setRuntimeMetrics] = useState<RuntimeMetrics | null>(null)
   const [currentPlatform, setCurrentPlatform] = useState('')
   const [pluginPackageExtension, setPluginPackageExtension] = useState('zszc-plugin')
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([])
@@ -447,6 +475,8 @@ function App() {
   const [pluginManagerBusy, setPluginManagerBusy] = useState(false)
   const [uninstallingPluginId, setUninstallingPluginId] = useState<string | null>(null)
   const [activeSection, setActiveSection] = useState<RailSection>('datasource')
+  const [leftPanelVisible, setLeftPanelVisible] = useState(true)
+  const [rightPanelVisible, setRightPanelVisible] = useState(true)
   const [profiles, setProfiles] = useState<ConnectionProfile[]>([])
   const [dataSourceGroups, setDataSourceGroups] = useState<DataSourceGroup[]>([])
   const [compareForm, setCompareForm] = useState<CompareFormState>(defaultCompareForm)
@@ -468,6 +498,7 @@ function App() {
   const [selection, setSelection] = useState<SelectionState>({ kind: 'none' })
   const [selectedGroupKey, setSelectedGroupKey] = useState('')
   const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set())
+  const [navigationSearchText, setNavigationSearchText] = useState('')
   const [databasesByProfile, setDatabasesByProfile] = useState<Record<string, DatabaseEntry[]>>(
     {},
   )
@@ -492,7 +523,7 @@ function App() {
     useState<CreateDatabaseDialogState | null>(null)
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null)
   const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null)
-  const [outputVisible, setOutputVisible] = useState(false)
+  const [outputVisible, setOutputVisible] = useState(true)
   const [outputLogs, setOutputLogs] = useState<OutputLogEntry[]>([])
   const [toasts, setToasts] = useState<ToastItem[]>([])
   const outputBodyRef = useRef<HTMLDivElement | null>(null)
@@ -501,10 +532,13 @@ function App() {
   const sqlAutocompleteRequestsRef = useRef<
     Partial<Record<string, Promise<SqlAutocompleteSchema | null>>>
   >({})
+  const tableLoadRequestsRef = useRef<Partial<Record<string, Promise<TableEntry[]>>>>({})
   const visibleHistoryItems = useMemo(
     () => compareHistoryItems.filter((item) => item.history_type === compareHistoryType),
     [compareHistoryItems, compareHistoryType],
   )
+  const deferredNavigationSearchText = useDeferredValue(navigationSearchText)
+  const normalizedNavigationSearchText = deferredNavigationSearchText.trim().toLowerCase()
 
   useEffect(() => {
     let cancelled = false
@@ -542,6 +576,33 @@ function App() {
 
     return () => {
       cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function syncRuntimeMetrics() {
+      try {
+        const nextMetrics = await getRuntimeMetrics()
+        if (!cancelled) {
+          setRuntimeMetrics(nextMetrics)
+        }
+      } catch {
+        if (!cancelled) {
+          setRuntimeMetrics(null)
+        }
+      }
+    }
+
+    void syncRuntimeMetrics()
+    const timer = window.setInterval(() => {
+      void syncRuntimeMetrics()
+    }, 2000)
+
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
     }
   }, [])
 
@@ -667,6 +728,51 @@ function App() {
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (!normalizedNavigationSearchText) {
+      return
+    }
+
+    const connectedProfiles = profiles.filter(
+      (profile) => profileConnectionState[profile.id] === 'connected',
+    )
+    if (connectedProfiles.length === 0) {
+      return
+    }
+
+    let cancelled = false
+
+    async function warmConnectedDatabaseTables() {
+      for (const profile of connectedProfiles) {
+        const databases = databasesByProfile[profile.id] ?? []
+        for (const database of databases) {
+          if (cancelled) {
+            return
+          }
+
+          const databaseKey = buildDatabaseKey(profile.id, database.name)
+          if (tablesByDatabase[databaseKey] || tableLoadRequestsRef.current[databaseKey]) {
+            continue
+          }
+
+          await ensureTablesLoaded(profile.id, database.name)
+        }
+      }
+    }
+
+    void warmConnectedDatabaseTables()
+
+    return () => {
+      cancelled = true
+    }
+  }, [
+    databasesByProfile,
+    normalizedNavigationSearchText,
+    profileConnectionState,
+    profiles,
+    tablesByDatabase,
+  ])
 
   function pushToast(message: string, tone: ToastTone) {
     setToasts((previous) => [
@@ -1772,17 +1878,27 @@ function App() {
       return tablesByDatabase[databaseKey]
     }
 
-    setNodeLoading((previous) => ({ ...previous, [databaseKey]: true }))
-    try {
-      const tables = await listDatabaseTables(profileId, databaseName)
-      setTablesByDatabase((previous) => ({ ...previous, [databaseKey]: tables }))
-      return tables
-    } catch (error) {
-      pushToast(error instanceof Error ? error.message : '读取数据表失败', 'error')
-      return []
-    } finally {
-      setNodeLoading((previous) => ({ ...previous, [databaseKey]: false }))
+    if (!options?.force && tableLoadRequestsRef.current[databaseKey]) {
+      return tableLoadRequestsRef.current[databaseKey]
     }
+
+    setNodeLoading((previous) => ({ ...previous, [databaseKey]: true }))
+    const request = (async () => {
+      try {
+        const tables = await listDatabaseTables(profileId, databaseName)
+        setTablesByDatabase((previous) => ({ ...previous, [databaseKey]: tables }))
+        return tables
+      } catch (error) {
+        pushToast(error instanceof Error ? error.message : '读取数据表失败', 'error')
+        return []
+      } finally {
+        delete tableLoadRequestsRef.current[databaseKey]
+        setNodeLoading((previous) => ({ ...previous, [databaseKey]: false }))
+      }
+    })()
+
+    tableLoadRequestsRef.current[databaseKey] = request
+    return request
   }
 
   async function ensureSqlAutocompleteLoaded(
@@ -4062,6 +4178,54 @@ function App() {
     () => buildDataSourceTreeGroups(dataSourceGroups, profiles),
     [dataSourceGroups, profiles],
   )
+  const connectedProfileIds = useMemo(
+    () =>
+      new Set(
+        profiles
+          .filter((profile) => profileConnectionState[profile.id] === 'connected')
+          .map((profile) => profile.id),
+      ),
+    [profileConnectionState, profiles],
+  )
+  const navigationTreeGroups = useMemo(
+    () =>
+      buildNavigationTreeGroups(dataSourceTreeGroups, {
+        search_keyword: normalizedNavigationSearchText,
+        connected_profile_ids: connectedProfileIds,
+        databases_by_profile: databasesByProfile,
+        tables_by_database: tablesByDatabase,
+      }),
+    [
+      connectedProfileIds,
+      dataSourceTreeGroups,
+      databasesByProfile,
+      normalizedNavigationSearchText,
+      tablesByDatabase,
+    ],
+  )
+  const visibleExpandedKeys = useMemo(() => {
+    if (!normalizedNavigationSearchText) {
+      return expandedKeys
+    }
+
+    const next = new Set(expandedKeys)
+    navigationTreeGroups.forEach((group) => {
+      next.add(group.key)
+      group.profiles.forEach((profileView) => {
+        if (profileView.matched_by_name || profileView.databases.length > 0) {
+          next.add(`profile:${profileView.entry.id}`)
+        }
+
+        profileView.databases.forEach((databaseView) => {
+          if (databaseView.tables.length > 0) {
+            next.add(`database:${buildDatabaseKey(profileView.entry.id, databaseView.entry.name)}`)
+          }
+        })
+      })
+    })
+
+    return next
+  }, [expandedKeys, navigationTreeGroups, normalizedNavigationSearchText])
   const filteredDataCompareTables = useMemo(() => {
     const commonTables = dataCompareState.discovery?.common_tables
     if (!commonTables) {
@@ -4111,8 +4275,35 @@ function App() {
       ) ?? null
     )
   }, [activeWorkspaceId, installedPlugins])
-  const collapseNavigationPane =
-    activeSection === 'structure_compare' || activeSection === 'data_compare'
+  const cpuText =
+    runtimeMetrics == null ? '--' : `${runtimeMetrics.cpu_percent.toFixed(1)}%`
+  const memoryText =
+    runtimeMetrics == null ? '--' : `${Math.max(0, Math.round(runtimeMetrics.memory_mb))} MB`
+  const panelToggleItems: Array<{
+    key: WorkspacePanelKey
+    label: string
+    active: boolean
+    onClick: () => void
+  }> = [
+    {
+      key: 'left',
+      label: '左侧栏',
+      active: leftPanelVisible,
+      onClick: () => setLeftPanelVisible((previous) => !previous),
+    },
+    {
+      key: 'right',
+      label: '右侧栏',
+      active: rightPanelVisible,
+      onClick: () => setRightPanelVisible((previous) => !previous),
+    },
+    {
+      key: 'bottom',
+      label: '底部栏',
+      active: outputVisible,
+      onClick: () => setOutputVisible((previous) => !previous),
+    },
+  ]
 
   return (
     <main
@@ -4137,6 +4328,30 @@ function App() {
               redisWorkspaceId={redisWorkspaceId}
               workspaceMenuOpen={workspaceMenuOpen}
             />
+            <div className="window-bar-center" aria-label="布局面板开关">
+              <div className="panel-visibility-group">
+                {panelToggleItems.map((item) => (
+                  <button
+                    key={item.key}
+                    className={`panel-visibility-button ${item.active ? 'active' : ''}`}
+                    type="button"
+                    onClick={item.onClick}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="window-bar-metrics" aria-label="运行指标">
+              <div className="window-metric-chip">
+                <span className="window-metric-label">CPU</span>
+                <strong>{cpuText}</strong>
+              </div>
+              <div className="window-metric-chip">
+                <span className="window-metric-label">内存</span>
+                <strong>{memoryText}</strong>
+              </div>
+            </div>
           </div>
         </header>
 
@@ -4158,9 +4373,7 @@ function App() {
             </Suspense>
           </section>
         ) : (
-        <div
-          className={`workspace-layout ${collapseNavigationPane ? 'workspace-layout-collapsed' : ''}`}
-        >
+        <div className="workspace-layout">
           <aside className="tool-rail">
             <button
               className={`rail-item ${activeSection === 'datasource' ? 'active' : ''}`}
@@ -4213,346 +4426,397 @@ function App() {
             </button>
           </aside>
 
-          <aside className={`navigation-pane ${collapseNavigationPane ? 'hidden-pane' : ''}`}>
-            {activeSection === 'datasource' ? (
-            <>
-            <div className="pane-header">
-              <div className="pane-title">
-                <DatabaseGlyph />
-                <strong>数据库导航</strong>
-              </div>
-
-              <div className="pane-actions">
-                <SquareIconButton label="新增数据源" onClick={() => openProfileEditorTab()}>
-                  +
-                </SquareIconButton>
-                <SquareIconButton
-                  label="数据源属性"
-                  disabled={!selectedProfile}
-                  onClick={() => {
-                    if (selectedProfile) {
-                      openProfileEditorTab(selectedProfile)
-                    }
-                  }}
-                >
-                  <DatabaseSettingsGlyph />
-                </SquareIconButton>
-                <SquareIconButton label="刷新" onClick={() => void refreshCurrentSelection()}>
-                  ↻
-                </SquareIconButton>
-                <SquareIconButton
-                  label="停止连接"
-                  disabled={!selectedProfile}
-                  onClick={() => void disconnectSelectedProfile()}
-                >
-                  ■
-                </SquareIconButton>
-                <SquareActionButton
-                  label="控制台"
-                  disabled={selection.kind === 'none'}
-                  onClick={() => openConsoleFromSelection()}
-                />
-                <SquareActionButton
-                  active={outputVisible}
-                  label="输出"
-                  onClick={() => setOutputVisible((previous) => !previous)}
-                />
-              </div>
-            </div>
-
-            <div className="tree-pane">
-              {bootstrapError ? (
-                <EmptyNotice title="初始化失败" text={bootstrapError} />
-              ) : null}
-
-              {!bootstrapError && profiles.length === 0 && dataSourceGroups.length === 0 ? (
-                <EmptyNotice
-                  title="暂无数据源"
-                  text="点击左上角加号，在右侧工作区创建新的 MySQL 数据源。"
-                />
-              ) : null}
-
-              {dataSourceTreeGroups.map((group) => {
-                const expanded = expandedKeys.has(group.key)
-
-                return (
-                  <div className="tree-group" key={group.key}>
-                    <button
-                      className={`tree-row group-row ${selectedGroupKey === group.key ? 'selected' : ''}`}
-                      type="button"
-                      onClick={() => {
-                        setSelectedGroupKey(group.key)
-                        setSelection({ kind: 'none' })
-                        setTreeContextMenu(null)
-                      }}
-                      onDoubleClick={() => void toggleNodeExpansion(group.key)}
-                      onContextMenu={(event) => {
-                        event.preventDefault()
-                        event.stopPropagation()
-                        if (!group.group_id) {
-                          return
-                        }
-
-                        setSelectedGroupKey(group.key)
-                        setSelection({ kind: 'none' })
-                        setTreeContextMenu({
-                          kind: 'group',
-                          x: Math.min(event.clientX, window.innerWidth - 208),
-                          y: Math.min(event.clientY, window.innerHeight - 92),
-                          group_id: group.group_id,
-                          group_name: group.group_name,
-                        })
-                      }}
-                    >
-                      <span className="tree-caret">{expanded ? '▾' : '▸'}</span>
-                      <span className="tree-node-label">{group.group_name}</span>
-                      <span className="tree-node-meta">{group.profiles.length} 个数据源</span>
-                    </button>
-
-                    {expanded ? (
-                      <div className="tree-children">
-                        {group.profiles.length === 0 ? (
-                          <div className="tree-empty-note">暂无数据源</div>
-                        ) : null}
-
-                        {group.profiles.map((profile) => {
-                          const datasourceKey = `profile:${profile.id}`
-                          const datasourceExpanded = expandedKeys.has(datasourceKey)
-                          const databases = databasesByProfile[profile.id] ?? []
-
-                          return (
-                            <div className="tree-group" key={profile.id}>
-                              <button
-                                className={`tree-row datasource-row ${
-                                  selection.kind === 'profile' &&
-                                  selection.profile_id === profile.id
-                                    ? 'selected'
-                                    : ''
-                                }`}
-                                type="button"
-                                onClick={() => {
-                                  selectProfile(profile.id)
-                                }}
-                                onDoubleClick={() => {
-                                  selectProfile(profile.id)
-                                  void toggleNodeExpansion(datasourceKey, async () => {
-                                    await ensureDatabasesLoaded(profile.id)
-                                  })
-                                }}
-                                onContextMenu={(event) => {
-                                  event.preventDefault()
-                                  event.stopPropagation()
-                                  selectProfile(profile.id)
-                                  setTreeContextMenu({
-                                    kind: 'profile',
-                                    x: Math.min(event.clientX, window.innerWidth - 188),
-                                    y: Math.min(event.clientY, window.innerHeight - 140),
-                                    profile_id: profile.id,
-                                  })
-                                }}
-                              >
-                                <span className="tree-caret">
-                                  {datasourceExpanded ? '▾' : '▸'}
-                                </span>
-                                <span
-                                  className={`connection-indicator connection-${
-                                    profileConnectionState[profile.id] ?? 'idle'
-                                  }`}
-                                />
-                                <span className="tree-node-label">{profile.data_source_name}</span>
-                                <span className="tree-node-meta">
-                                  {nodeLoading[profile.id]
-                                    ? '加载中'
-                                    : databasesByProfile[profile.id]
-                                      ? `${databases.length} 个数据库`
-                                      : '待加载'}
-                                </span>
-                              </button>
-
-                              {datasourceExpanded ? (
-                                <div className="tree-children">
-                                  {databases.map((database) => {
-                                    const databaseKey = buildDatabaseKey(
-                                      profile.id,
-                                      database.name,
-                                    )
-                                    const databaseNodeKey = `database:${databaseKey}`
-                                    const databaseExpanded =
-                                      expandedKeys.has(databaseNodeKey)
-                                    const tables = tablesByDatabase[databaseKey] ?? []
-
-                                    return (
-                                      <div className="tree-group" key={databaseKey}>
-                                        <button
-                                          className={`tree-row database-row ${
-                                            selection.kind === 'database' &&
-                                            selection.profile_id === profile.id &&
-                                            selection.database_name === database.name
-                                              ? 'selected'
-                                              : ''
-                                          }`}
-                                          type="button"
-                                          onClick={() => {
-                                            selectDatabase(profile.id, database.name)
-                                          }}
-                                          onDoubleClick={() => {
-                                            selectDatabase(profile.id, database.name)
-                                            void toggleNodeExpansion(
-                                              databaseNodeKey,
-                                              async () => {
-                                                await ensureTablesLoaded(
-                                                  profile.id,
-                                                  database.name,
-                                                )
-                                              },
-                                            )
-                                          }}
-                                          onContextMenu={(event) => {
-                                            event.preventDefault()
-                                            event.stopPropagation()
-                                            selectDatabase(profile.id, database.name)
-                                            setTreeContextMenu({
-                                              kind: 'database',
-                                              x: Math.min(
-                                                event.clientX,
-                                                window.innerWidth - 188,
-                                              ),
-                                              y: Math.min(
-                                                event.clientY,
-                                                window.innerHeight - 140,
-                                              ),
-                                              profile_id: profile.id,
-                                              database_name: database.name,
-                                            })
-                                          }}
-                                        >
-                                          <span className="tree-caret">
-                                            {databaseExpanded ? '▾' : '▸'}
-                                          </span>
-                                          <TreeDatabaseGlyph />
-                                          <span className="tree-node-label">
-                                            {database.name}
-                                          </span>
-                                          <span className="tree-node-meta">
-                                            {database.table_count} 张表
-                                          </span>
-                                        </button>
-
-                                        {databaseExpanded ? (
-                                          <div className="tree-children">
-                                            {tables.map((table) => (
-                                              <button
-                                                className={`tree-row table-row ${
-                                                  selection.kind === 'table' &&
-                                                  selection.profile_id === profile.id &&
-                                                  selection.database_name === database.name &&
-                                                  selection.table_name === table.name
-                                                    ? 'selected'
-                                                    : ''
-                                                }`}
-                                                key={`${databaseKey}:${table.name}`}
-                                                type="button"
-                                                onClick={() => {
-                                                  selectTable(
-                                                    profile.id,
-                                                    database.name,
-                                                    table.name,
-                                                  )
-                                                }}
-                                                onDoubleClick={() => {
-                                                  selectTable(
-                                                    profile.id,
-                                                    database.name,
-                                                    table.name,
-                                                  )
-                                                  void openTableTab(
-                                                    'data',
-                                                    profile.id,
-                                                    database.name,
-                                                    table.name,
-                                                  )
-                                                }}
-                                                onContextMenu={(event) => {
-                                                  event.preventDefault()
-                                                  event.stopPropagation()
-                                                  selectTable(
-                                                    profile.id,
-                                                    database.name,
-                                                    table.name,
-                                                  )
-                                                  setTreeContextMenu({
-                                                    kind: 'table',
-                                                    x: Math.min(
-                                                      event.clientX,
-                                                      window.innerWidth - 188,
-                                                    ),
-                                                    y: Math.min(
-                                                      event.clientY,
-                                                      window.innerHeight - 220,
-                                                    ),
-                                                    profile_id: profile.id,
-                                                    database_name: database.name,
-                                                    table_name: table.name,
-                                                  })
-                                                }}
-                                              >
-                                                <TreeTableGlyph />
-                                                <span className="tree-node-label">
-                                                  {table.name}
-                                                </span>
-                                              </button>
-                                            ))}
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    )
-                                  })}
-                                </div>
-                              ) : null}
-                            </div>
-                          )
-                        })}
+          <div className="workspace-main-shell">
+            <div className="workspace-main-row">
+              {leftPanelVisible ? (
+                <aside className="workspace-side-dock workspace-side-dock-left">
+                  <div className="navigation-pane">
+                    {activeSection === 'datasource' ? (
+                    <>
+                    <div className="pane-header">
+                      <div className="pane-title">
+                        <DatabaseGlyph />
+                        <strong>数据库导航</strong>
                       </div>
-                    ) : null}
-                  </div>
-                )
-              })}
-            </div>
-            </>
-            ) : activeSection === 'data_compare' ? (
-              <div />
-            ) : activeSection === 'structure_compare' ? (
-              <div />
-            ) : (
-              <CompareSidebar
-                title="对比记录"
-                subtitle="本地保存的结构对比和数据对比记录，可用于回看统计与涉及表。"
-              >
-                <div className="compare-history-tabs">
-                  <button
-                    className={`flat-button ${compareHistoryType === 'data' ? 'primary' : ''}`}
-                    type="button"
-                    onClick={() => setCompareHistoryType('data')}
-                  >
-                    数据对比
-                  </button>
-                  <button
-                    className={`flat-button ${compareHistoryType === 'structure' ? 'primary' : ''}`}
-                    type="button"
-                    onClick={() => setCompareHistoryType('structure')}
-                  >
-                    结构对比
-                  </button>
-                </div>
-                <div className="compare-summary-list">
-                  <span>记录数 {visibleHistoryItems.length}</span>
-                  <span>当前筛选 {compareHistoryType === 'data' ? '数据对比' : '结构对比'}</span>
-                </div>
-              </CompareSidebar>
-            )}
-          </aside>
 
-          <section className="content-pane">
+                      <div className="navigation-search-card">
+                        <input
+                          value={navigationSearchText}
+                          onChange={(event) => setNavigationSearchText(event.target.value)}
+                          placeholder="搜索连接名、数据库、表"
+                        />
+                        <small>数据库与表仅搜索已连接的数据源，表结果会逐步补齐。</small>
+                      </div>
+
+                      <div className="pane-actions">
+                        <SquareIconButton label="新增数据源" onClick={() => openProfileEditorTab()}>
+                          +
+                        </SquareIconButton>
+                        <SquareIconButton
+                          label="数据源属性"
+                          disabled={!selectedProfile}
+                          onClick={() => {
+                            if (selectedProfile) {
+                              openProfileEditorTab(selectedProfile)
+                            }
+                          }}
+                        >
+                          <DatabaseSettingsGlyph />
+                        </SquareIconButton>
+                        <SquareIconButton label="刷新" onClick={() => void refreshCurrentSelection()}>
+                          ↻
+                        </SquareIconButton>
+                        <SquareIconButton
+                          label="停止连接"
+                          disabled={!selectedProfile}
+                          onClick={() => void disconnectSelectedProfile()}
+                        >
+                          ■
+                        </SquareIconButton>
+                        <SquareActionButton
+                          label="控制台"
+                          disabled={selection.kind === 'none'}
+                          onClick={() => openConsoleFromSelection()}
+                        />
+                      </div>
+                    </div>
+
+                    <div className="tree-pane">
+                      {bootstrapError ? (
+                        <EmptyNotice title="初始化失败" text={bootstrapError} />
+                      ) : null}
+
+                      {!bootstrapError && profiles.length === 0 && dataSourceGroups.length === 0 ? (
+                        <EmptyNotice
+                          title="暂无数据源"
+                          text="点击左上角加号，在右侧工作区创建新的 MySQL 数据源。"
+                        />
+                      ) : null}
+
+                      {!bootstrapError &&
+                      navigationSearchText.trim() &&
+                      navigationTreeGroups.length === 0 ? (
+                        <EmptyNotice
+                          title="未找到匹配项"
+                          text="连接名可直接搜索；数据库和表仅在已连接的数据源中检索。"
+                        />
+                      ) : null}
+
+                      {navigationTreeGroups.map((group) => {
+                        const expanded = visibleExpandedKeys.has(group.key)
+
+                        return (
+                          <div className="tree-group" key={group.key}>
+                            <button
+                              className={`tree-row group-row ${selectedGroupKey === group.key ? 'selected' : ''}`}
+                              type="button"
+                              onClick={() => {
+                                setSelectedGroupKey(group.key)
+                                setSelection({ kind: 'none' })
+                                setTreeContextMenu(null)
+                              }}
+                              onDoubleClick={() => void toggleNodeExpansion(group.key)}
+                              onContextMenu={(event) => {
+                                event.preventDefault()
+                                event.stopPropagation()
+                                if (!group.group_id) {
+                                  return
+                                }
+
+                                setSelectedGroupKey(group.key)
+                                setSelection({ kind: 'none' })
+                                setTreeContextMenu({
+                                  kind: 'group',
+                                  x: Math.min(event.clientX, window.innerWidth - 208),
+                                  y: Math.min(event.clientY, window.innerHeight - 92),
+                                  group_id: group.group_id,
+                                  group_name: group.group_name,
+                                })
+                              }}
+                            >
+                              <span className="tree-caret">{expanded ? '▾' : '▸'}</span>
+                              <span className="tree-node-label">{group.group_name}</span>
+                              <span className="tree-node-meta">{group.profiles.length} 个数据源</span>
+                            </button>
+
+                            {expanded ? (
+                              <div className="tree-children">
+                                {group.profiles.length === 0 ? (
+                                  <div className="tree-empty-note">暂无数据源</div>
+                                ) : null}
+
+                                {group.profiles.map((profileView) => {
+                                  const profile = profileView.entry
+                                  const datasourceKey = `profile:${profile.id}`
+                                  const datasourceExpanded = visibleExpandedKeys.has(datasourceKey)
+                                  const databases = profileView.databases
+
+                                  return (
+                                    <div className="tree-group" key={profile.id}>
+                                      <button
+                                        className={`tree-row datasource-row ${
+                                          selection.kind === 'profile' &&
+                                          selection.profile_id === profile.id
+                                            ? 'selected'
+                                            : ''
+                                        }`}
+                                        type="button"
+                                        onClick={() => {
+                                          selectProfile(profile.id)
+                                          setExpandedKeys((previous) =>
+                                            expandAncestorsForProfile(previous, profile),
+                                          )
+                                        }}
+                                        onDoubleClick={() => {
+                                          selectProfile(profile.id)
+                                          void toggleNodeExpansion(datasourceKey, async () => {
+                                            await ensureDatabasesLoaded(profile.id)
+                                          })
+                                        }}
+                                        onContextMenu={(event) => {
+                                          event.preventDefault()
+                                          event.stopPropagation()
+                                          selectProfile(profile.id)
+                                          setTreeContextMenu({
+                                            kind: 'profile',
+                                            x: Math.min(event.clientX, window.innerWidth - 188),
+                                            y: Math.min(event.clientY, window.innerHeight - 140),
+                                            profile_id: profile.id,
+                                          })
+                                        }}
+                                      >
+                                        <span className="tree-caret">
+                                          {datasourceExpanded ? '▾' : '▸'}
+                                        </span>
+                                        <span
+                                          className={`connection-indicator connection-${
+                                            profileConnectionState[profile.id] ?? 'idle'
+                                          }`}
+                                        />
+                                        <span className="tree-node-label">{profile.data_source_name}</span>
+                                        <span className="tree-node-meta">
+                                          {nodeLoading[profile.id]
+                                            ? '加载中'
+                                            : databasesByProfile[profile.id]
+                                              ? `${(databasesByProfile[profile.id] ?? []).length} 个数据库`
+                                              : '待加载'}
+                                        </span>
+                                      </button>
+
+                                      {datasourceExpanded ? (
+                                        <div className="tree-children">
+                                          {databases.map((databaseView) => {
+                                            const database = databaseView.entry
+                                            const databaseKey = buildDatabaseKey(
+                                              profile.id,
+                                              database.name,
+                                            )
+                                            const databaseNodeKey = `database:${databaseKey}`
+                                            const databaseExpanded =
+                                              visibleExpandedKeys.has(databaseNodeKey)
+                                            const tables = databaseView.tables
+
+                                            return (
+                                              <div className="tree-group" key={databaseKey}>
+                                                <button
+                                                  className={`tree-row database-row ${
+                                                    selection.kind === 'database' &&
+                                                    selection.profile_id === profile.id &&
+                                                    selection.database_name === database.name
+                                                      ? 'selected'
+                                                      : ''
+                                                  }`}
+                                                  type="button"
+                                                  onClick={() => {
+                                                    selectDatabase(profile.id, database.name)
+                                                    setExpandedKeys((previous) =>
+                                                      expandAncestorsForDatabase(
+                                                        previous,
+                                                        profile,
+                                                        database.name,
+                                                      ),
+                                                    )
+                                                  }}
+                                                  onDoubleClick={() => {
+                                                    selectDatabase(profile.id, database.name)
+                                                    void toggleNodeExpansion(
+                                                      databaseNodeKey,
+                                                      async () => {
+                                                        await ensureTablesLoaded(
+                                                          profile.id,
+                                                          database.name,
+                                                        )
+                                                      },
+                                                    )
+                                                  }}
+                                                  onContextMenu={(event) => {
+                                                    event.preventDefault()
+                                                    event.stopPropagation()
+                                                    selectDatabase(profile.id, database.name)
+                                                    setTreeContextMenu({
+                                                      kind: 'database',
+                                                      x: Math.min(
+                                                        event.clientX,
+                                                        window.innerWidth - 188,
+                                                      ),
+                                                      y: Math.min(
+                                                        event.clientY,
+                                                        window.innerHeight - 140,
+                                                      ),
+                                                      profile_id: profile.id,
+                                                      database_name: database.name,
+                                                    })
+                                                  }}
+                                                >
+                                                  <span className="tree-caret">
+                                                    {databaseExpanded ? '▾' : '▸'}
+                                                  </span>
+                                                  <TreeDatabaseGlyph />
+                                                  <span className="tree-node-label">
+                                                    {database.name}
+                                                  </span>
+                                                  <span className="tree-node-meta">
+                                                    {navigationSearchText.trim() && tables.length > 0
+                                                      ? `${tables.length} 个匹配表`
+                                                      : nodeLoading[databaseKey] &&
+                                                          !tablesByDatabase[databaseKey]
+                                                        ? '搜索中'
+                                                        : `${database.table_count} 张表`}
+                                                  </span>
+                                                </button>
+
+                                                {databaseExpanded ? (
+                                                  <div className="tree-children">
+                                                    {tables.map((table) => (
+                                                      <button
+                                                        className={`tree-row table-row ${
+                                                          selection.kind === 'table' &&
+                                                          selection.profile_id === profile.id &&
+                                                          selection.database_name === database.name &&
+                                                          selection.table_name === table.entry.name
+                                                            ? 'selected'
+                                                            : ''
+                                                        }`}
+                                                        key={`${databaseKey}:${table.entry.name}`}
+                                                        type="button"
+                                                        onClick={() => {
+                                                          selectTable(
+                                                            profile.id,
+                                                            database.name,
+                                                            table.entry.name,
+                                                          )
+                                                          setExpandedKeys((previous) =>
+                                                            expandAncestorsForTable(
+                                                              previous,
+                                                              profile,
+                                                              database.name,
+                                                            ),
+                                                          )
+                                                        }}
+                                                        onDoubleClick={() => {
+                                                          selectTable(
+                                                            profile.id,
+                                                            database.name,
+                                                            table.entry.name,
+                                                          )
+                                                          void openTableTab(
+                                                            'data',
+                                                            profile.id,
+                                                            database.name,
+                                                            table.entry.name,
+                                                          )
+                                                        }}
+                                                        onContextMenu={(event) => {
+                                                          event.preventDefault()
+                                                          event.stopPropagation()
+                                                          selectTable(
+                                                            profile.id,
+                                                            database.name,
+                                                            table.entry.name,
+                                                          )
+                                                          setTreeContextMenu({
+                                                            kind: 'table',
+                                                            x: Math.min(
+                                                              event.clientX,
+                                                              window.innerWidth - 188,
+                                                            ),
+                                                            y: Math.min(
+                                                              event.clientY,
+                                                              window.innerHeight - 220,
+                                                            ),
+                                                            profile_id: profile.id,
+                                                            database_name: database.name,
+                                                            table_name: table.entry.name,
+                                                          })
+                                                        }}
+                                                      >
+                                                        <TreeTableGlyph />
+                                                        <span className="tree-node-label">
+                                                          {table.entry.name}
+                                                        </span>
+                                                      </button>
+                                                    ))}
+                                                  </div>
+                                                ) : null}
+                                              </div>
+                                            )
+                                          })}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
+                          </div>
+                        )
+                      })}
+                    </div>
+                    </>
+                    ) : activeSection === 'data_compare' ? (
+                      <WorkspacePanelPlaceholder
+                        title="左侧面板"
+                        description="这里预留为数据对比的筛选、目录或资源树区域，当前先完成可展示与隐藏的骨架。"
+                        tone="accent"
+                      />
+                    ) : activeSection === 'structure_compare' ? (
+                      <WorkspacePanelPlaceholder
+                        title="左侧面板"
+                        description="这里预留为结构对比的筛选、分类或导航区域，当前先完成可展示与隐藏的骨架。"
+                        tone="accent"
+                      />
+                    ) : (
+                      <CompareSidebar
+                        title="对比记录"
+                        subtitle="本地保存的结构对比和数据对比记录，可用于回看统计与涉及表。"
+                      >
+                        <div className="compare-history-tabs">
+                          <button
+                            className={`flat-button ${compareHistoryType === 'data' ? 'primary' : ''}`}
+                            type="button"
+                            onClick={() => setCompareHistoryType('data')}
+                          >
+                            数据对比
+                          </button>
+                          <button
+                            className={`flat-button ${compareHistoryType === 'structure' ? 'primary' : ''}`}
+                            type="button"
+                            onClick={() => setCompareHistoryType('structure')}
+                          >
+                            结构对比
+                          </button>
+                        </div>
+                        <div className="compare-summary-list">
+                          <span>记录数 {visibleHistoryItems.length}</span>
+                          <span>当前筛选 {compareHistoryType === 'data' ? '数据对比' : '结构对比'}</span>
+                        </div>
+                      </CompareSidebar>
+                    )}
+                  </div>
+                </aside>
+              ) : null}
+
+              <section className="content-pane">
             {activeSection === 'datasource' ? (
             <>
             <div className="tab-bar">
@@ -4727,14 +4991,6 @@ function App() {
 
               {!activeTab ? <EmptyWorkspace /> : null}
             </div>
-
-            {outputVisible ? (
-              <OutputDock
-                logs={outputLogs}
-                outputBodyRef={outputBodyRef}
-                onClear={() => setOutputLogs([])}
-              />
-            ) : null}
             </>
             ) : activeSection === 'data_compare' ? (
               <Suspense
@@ -4848,7 +5104,35 @@ function App() {
                 />
               </Suspense>
             )}
-          </section>
+              </section>
+
+              {rightPanelVisible ? (
+                <aside className="workspace-side-dock workspace-side-dock-right">
+                  <WorkspacePanelPlaceholder
+                    title="右侧面板"
+                    description="这里预留为属性、结果摘要或辅助信息区域，当前先完成可展示与隐藏的布局行为。"
+                  />
+                </aside>
+              ) : null}
+            </div>
+
+            {outputVisible ? (
+              <section className="workspace-bottom-dock">
+                {activeSection === 'datasource' ? (
+                  <OutputDock
+                    logs={outputLogs}
+                    outputBodyRef={outputBodyRef}
+                    onClear={() => setOutputLogs([])}
+                  />
+                ) : (
+                  <WorkspacePanelPlaceholder
+                    title="底部面板"
+                    description="这里预留为日志、问题、结果或终端区域，当前先完成可展示与隐藏的布局行为。"
+                  />
+                )}
+              </section>
+            ) : null}
+          </div>
         </div>
         )}
       </section>
@@ -5968,6 +6252,24 @@ function OutputDock({
   )
 }
 
+function WorkspacePanelPlaceholder({
+  title,
+  description,
+  tone = 'default',
+}: {
+  title: string
+  description: string
+  tone?: 'default' | 'accent'
+}) {
+  return (
+    <div className={`workspace-panel-placeholder workspace-panel-placeholder-${tone}`}>
+      <div className="workspace-panel-placeholder-badge">Layout</div>
+      <strong>{title}</strong>
+      <p>{description}</p>
+    </div>
+  )
+}
+
 function EmptyWorkspace() {
   return <div className="empty-workspace" />
 }
@@ -6178,6 +6480,85 @@ function buildDataSourceTreeGroups(
   return [...treeGroups, ...leftoverGroups]
 }
 
+function buildNavigationTreeGroups(
+  groups: DataSourceTreeGroup[],
+  options: {
+    search_keyword: string
+    connected_profile_ids: Set<string>
+    databases_by_profile: Record<string, DatabaseEntry[]>
+    tables_by_database: Record<string, TableEntry[]>
+  },
+): NavigationTreeGroup[] {
+  const {
+    search_keyword: searchKeyword,
+    connected_profile_ids: connectedProfileIds,
+    databases_by_profile: databasesByProfile,
+    tables_by_database: tablesByDatabase,
+  } = options
+
+  return groups
+    .map((group) => {
+      const profiles = group.profiles
+        .map((profile) => {
+          const matchedByName = searchKeyword
+            ? matchesNavigationSearch(profile.data_source_name, searchKeyword)
+            : false
+          const shouldSearchDatabases = searchKeyword
+            ? connectedProfileIds.has(profile.id)
+            : true
+
+          const visibleDatabases = shouldSearchDatabases
+            ? (databasesByProfile[profile.id] ?? [])
+                .map((database) => {
+                  const matchedDatabase = searchKeyword
+                    ? matchesNavigationSearch(database.name, searchKeyword)
+                    : false
+                  const databaseKey = buildDatabaseKey(profile.id, database.name)
+                  const visibleTables = searchKeyword
+                    ? (tablesByDatabase[databaseKey] ?? [])
+                        .filter((table) => matchesNavigationSearch(table.name, searchKeyword))
+                        .map((table) => ({ entry: table }))
+                    : (tablesByDatabase[databaseKey] ?? []).map((table) => ({ entry: table }))
+
+                  if (searchKeyword && !matchedDatabase && visibleTables.length === 0) {
+                    return null
+                  }
+
+                  return {
+                    entry: database,
+                    matched_by_name: matchedDatabase,
+                    tables: visibleTables,
+                  }
+                })
+                .filter((database): database is NavigationTreeDatabase => database !== null)
+            : []
+
+          if (searchKeyword && !matchedByName && visibleDatabases.length === 0) {
+            return null
+          }
+
+          return {
+            entry: profile,
+            matched_by_name: matchedByName,
+            databases: visibleDatabases,
+          }
+        })
+        .filter((profile): profile is NavigationTreeProfile => profile !== null)
+
+      if (searchKeyword && profiles.length === 0) {
+        return null
+      }
+
+      return {
+        key: group.key,
+        group_id: group.group_id,
+        group_name: group.group_name,
+        profiles,
+      }
+    })
+    .filter((group): group is NavigationTreeGroup => group !== null)
+}
+
 function compareGroupName(left: string, right: string) {
   if (left === ungroupedGroupName) {
     return 1
@@ -6242,6 +6623,33 @@ function expandAncestorsForProfile(previous: Set<string>, profile: ConnectionPro
   const next = new Set(previous)
   next.add(`group:${normalizeGroupName(profile.group_name)}`)
   return next
+}
+
+function expandAncestorsForDatabase(
+  previous: Set<string>,
+  profile: ConnectionProfile,
+  databaseName: string,
+) {
+  const next = expandAncestorsForProfile(previous, profile)
+  next.add(`profile:${profile.id}`)
+  next.add(`database:${buildDatabaseKey(profile.id, databaseName)}`)
+  return next
+}
+
+function expandAncestorsForTable(
+  previous: Set<string>,
+  profile: ConnectionProfile,
+  databaseName: string,
+) {
+  return expandAncestorsForDatabase(previous, profile, databaseName)
+}
+
+function matchesNavigationSearch(value: string, keyword: string) {
+  if (!keyword) {
+    return true
+  }
+
+  return value.toLowerCase().includes(keyword)
 }
 
 function upsertProfile(previous: ConnectionProfile[], profile: ConnectionProfile) {

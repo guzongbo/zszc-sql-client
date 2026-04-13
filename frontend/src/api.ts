@@ -60,6 +60,7 @@ import type {
   SaveConnectionProfilePayload,
   SaveRedisConnectionPayload,
   SaveFileDialogResult,
+  RuntimeMetrics,
   SqlAutocompleteSchema,
   SqlConsoleResult,
   SqlPreview,
@@ -100,6 +101,13 @@ export async function getAppBootstrap(): Promise<AppBootstrap> {
     return mockApi.getAppBootstrap()
   }
   return invokeCommand<AppBootstrap>('get_app_bootstrap')
+}
+
+export async function getRuntimeMetrics(): Promise<RuntimeMetrics | null> {
+  if (!isDesktopShell()) {
+    return null
+  }
+  return invokeCommand<RuntimeMetrics>('get_runtime_metrics')
 }
 
 export async function createDataSourceGroup(

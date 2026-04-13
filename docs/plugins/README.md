@@ -17,3 +17,10 @@
 
 - 功能说明：[`mock-id-generator-plugin.md`](./mock-id-generator-plugin.md)
 - 构建与打包：[`plugins/mock-id-generator-plugin/README.md`](../../plugins/mock-id-generator-plugin/README.md)
+
+### 钉钉通讯录变动查询插件
+
+一个面向企业钉钉通讯录巡检的业务插件，覆盖钉钉配置管理、通讯录变动查询和历史记录回看。
+
+- 功能说明：[`dingtalk-contact-change-plugin.md`](./dingtalk-contact-change-plugin.md)
+- 构建与打包：[`plugins/dingtalk-contact-change-plugin/README.md`](../../plugins/dingtalk-contact-change-plugin/README.md)

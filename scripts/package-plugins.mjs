@@ -17,6 +17,7 @@ const supportedModes = {
 const pluginDirs = [
   'plugins/password-util-plugin',
   'plugins/mock-id-generator-plugin',
+  'plugins/dingtalk-contact-change-plugin',
 ]
 
 const mode = process.argv[2] ?? 'host'

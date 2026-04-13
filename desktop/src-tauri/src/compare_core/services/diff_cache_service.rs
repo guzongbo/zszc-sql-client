@@ -1445,12 +1445,7 @@ impl DiffCacheReader {
 }
 
 fn cache_root_path() -> PathBuf {
-    let cache_dir_name = if cfg!(debug_assertions) {
-        "zszc-sql-client-dev"
-    } else {
-        "zszc-sql-client"
-    };
-    std::env::temp_dir().join(cache_dir_name)
+    std::env::temp_dir().join("zszc-sql-client")
 }
 
 fn diff_cache_storage_mode() -> DiffCacheStorageMode {

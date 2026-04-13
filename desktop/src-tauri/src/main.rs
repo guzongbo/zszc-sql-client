@@ -15,8 +15,7 @@ mod structure_compare_service;
 use crate::app_state::AppState;
 use crate::local_store::LocalStore;
 use anyhow::Context;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tauri::{Manager, RunEvent};
 use tracing::{info, warn};
 use tracing_subscriber::EnvFilter;
@@ -37,52 +36,13 @@ fn init_tracing() -> anyhow::Result<()> {
 }
 
 fn ensure_app_data_dir(app_handle: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
-    let base_app_data_dir = app_handle
+    let app_data_dir = app_handle
         .path()
         .app_data_dir()
         .context("无法解析桌面端数据目录")?;
 
-    if cfg!(debug_assertions) {
-        let debug_app_data_dir = base_app_data_dir.join("dev");
-        fs::create_dir_all(&debug_app_data_dir).context("无法创建开发环境数据目录")?;
-        migrate_legacy_debug_store(&base_app_data_dir, &debug_app_data_dir)?;
-        return Ok(debug_app_data_dir);
-    }
-
-    fs::create_dir_all(&base_app_data_dir).context("无法创建桌面端数据目录")?;
-    Ok(base_app_data_dir)
-}
-
-fn migrate_legacy_debug_store(base_dir: &Path, debug_dir: &Path) -> anyhow::Result<()> {
-    let base_database = base_dir.join(LOCAL_STORE_FILE_NAME);
-    let debug_database = debug_dir.join(LOCAL_STORE_FILE_NAME);
-
-    if !base_database.exists() || debug_database.exists() {
-        return Ok(());
-    }
-
-    // 旧版本开发态与正式包共用同一目录，这里在首次启动新开发版时把遗留库搬到 dev 目录。
-    for file_name in [
-        LOCAL_STORE_FILE_NAME.to_string(),
-        format!("{LOCAL_STORE_FILE_NAME}-wal"),
-        format!("{LOCAL_STORE_FILE_NAME}-shm"),
-    ] {
-        let source = base_dir.join(&file_name);
-        if !source.exists() {
-            continue;
-        }
-
-        let target = debug_dir.join(&file_name);
-        fs::rename(&source, &target).with_context(|| {
-            format!(
-                "无法迁移旧开发环境数据文件: {} -> {}",
-                source.display(),
-                target.display()
-            )
-        })?;
-    }
-
-    Ok(())
+    std::fs::create_dir_all(&app_data_dir).context("无法创建桌面端数据目录")?;
+    Ok(app_data_dir)
 }
 
 fn main() {

@@ -21,3 +21,6 @@
 
 - `plugin-workspace-design.md`：插件工作区设计与宿主约束
 - `plugin-development.md`：插件目录、协议、打包与安装流程
+- `plugins/README.md`：插件目录与插件说明入口
+- `plugins/password-util-plugin.md`：密码工具插件功能说明
+- `plugins/mock-id-generator-plugin.md`：随机信息与密码工具插件功能说明

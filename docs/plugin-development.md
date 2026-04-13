@@ -1,11 +1,12 @@
 # 插件开发说明
 
-本文档面向 `zszc-sql-client` 当前版本的插件体系，说明一个插件从目录组织、前后端实现到打包安装的完整流程。本文档基于仓库现有宿主实现整理，不是抽象设计稿。
+本文档面向 `zszc-sql-client` 当前版本的插件体系，说明一个插件从目录组织、前后端实现到打包安装的完整流程。当前宿主包含 `MySQL` 内置工作区、`Redis` 内置工作区和插件工作区三类能力，本文档聚焦插件工作区本身。本文档基于仓库现有宿主实现整理，不是抽象设计稿。
 
 ## 1. 先理解当前插件模型
 
 当前插件体系的核心约束如下：
 
+- 宿主当前同时提供 `MySQL` 内置工作区、`Redis` 内置工作区和插件工作区
 - 插件以“工作区”的形式挂载到宿主顶部工作区切换器
 - 切换到插件后，顶部栏以下区域由插件前端整块接管
 - 插件前端使用 `React + TypeScript`
@@ -55,6 +56,7 @@ plugins/your-plugin/
 
 - [`plugins/password-util-plugin/README.md`](../plugins/password-util-plugin/README.md)
 - [`plugins/mock-id-generator-plugin/README.md`](../plugins/mock-id-generator-plugin/README.md)
+- [`docs/plugins/README.md`](./plugins/README.md)
 
 ## 3. 插件清单 `plugin.json`
 

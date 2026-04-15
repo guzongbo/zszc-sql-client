@@ -33,11 +33,6 @@
   -webkit-user-select: none;
 }
 
-.window-bar-drag {
-  position: absolute;
-  inset: 0;
-}
-
 .window-bar-content {
   position: relative;
   z-index: 1;

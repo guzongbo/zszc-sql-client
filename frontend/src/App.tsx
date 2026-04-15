@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type RefObject,
   type ReactNode,
 } from 'react'
@@ -461,6 +462,57 @@ const RedisWorkspace = lazy(() =>
     default: module.RedisWorkspace,
   })),
 )
+
+const windowDragIgnoreSelector = [
+  'button',
+  'input',
+  'textarea',
+  'select',
+  'option',
+  'a',
+  '[role="button"]',
+  '[role="menu"]',
+  '[role="menuitem"]',
+  '[contenteditable="true"]',
+  '[data-window-drag-ignore="true"]',
+].join(', ')
+
+let startDesktopWindowDraggingTask: Promise<(() => Promise<void>) | null> | null = null
+let toggleDesktopWindowMaximizeTask: Promise<(() => Promise<void>) | null> | null = null
+
+async function startDesktopWindowDragging() {
+  if (startDesktopWindowDraggingTask == null) {
+    startDesktopWindowDraggingTask = Promise.all([
+      import('@tauri-apps/api/core'),
+      import('@tauri-apps/api/window'),
+    ]).then(([coreModule, windowModule]) => {
+      if (!coreModule.isTauri()) {
+        return null
+      }
+
+      return () => windowModule.getCurrentWindow().startDragging()
+    })
+  }
+
+  await (await startDesktopWindowDraggingTask)?.()
+}
+
+async function toggleDesktopWindowMaximize() {
+  if (toggleDesktopWindowMaximizeTask == null) {
+    toggleDesktopWindowMaximizeTask = Promise.all([
+      import('@tauri-apps/api/core'),
+      import('@tauri-apps/api/window'),
+    ]).then(([coreModule, windowModule]) => {
+      if (!coreModule.isTauri()) {
+        return null
+      }
+
+      return () => windowModule.getCurrentWindow().toggleMaximize()
+    })
+  }
+
+  await (await toggleDesktopWindowMaximizeTask)?.()
+}
 
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
@@ -4305,6 +4357,31 @@ function App() {
     },
   ]
 
+  const handleWindowBarPointerDown = (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0 || !event.isPrimary || event.pointerType === 'touch') {
+      return
+    }
+
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+
+    // 避免点击按钮、菜单等交互控件时误触发窗口拖拽。
+    if (target.closest(windowDragIgnoreSelector) != null) {
+      return
+    }
+
+    event.preventDefault()
+
+    if (event.detail === 2) {
+      void toggleDesktopWindowMaximize()
+      return
+    }
+
+    void startDesktopWindowDragging()
+  }
+
   return (
     <main
       className="app-shell"
@@ -4314,8 +4391,7 @@ function App() {
       }}
     >
       <section className="workspace-shell">
-        <header className="window-bar">
-          <div className="window-bar-drag" data-tauri-drag-region></div>
+        <header className="window-bar" onPointerDown={handleWindowBarPointerDown}>
           <div className="window-bar-content">
             <WorkspaceSwitcher
               activeWorkspaceId={activeWorkspaceId}
@@ -4328,7 +4404,11 @@ function App() {
               redisWorkspaceId={redisWorkspaceId}
               workspaceMenuOpen={workspaceMenuOpen}
             />
-            <div className="window-bar-center" aria-label="布局面板开关">
+            <div
+              className="window-bar-center"
+              aria-label="布局面板开关"
+              data-window-drag-ignore="true"
+            >
               <div className="panel-visibility-group">
                 {panelToggleItems.map((item) => (
                   <button

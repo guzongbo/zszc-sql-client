@@ -384,7 +384,24 @@ export default function App() {
   }
 
   async function handleDeleteConfig() {
-    if (!activeDraft?.is_saved || !activeDraft.id) {
+    if (!activeDraft) {
+      return
+    }
+
+    if (!activeDraft.is_saved || !activeDraft.id) {
+      const removedName = activeDraft.name.trim() || '未保存配置'
+      const remainingDrafts = configDrafts.filter((draft) => draft.local_key !== activeDraft.local_key)
+      const nextDrafts = remainingDrafts.length > 0 ? remainingDrafts : [createDraft(1)]
+      const nextActiveDraft =
+        nextDrafts.find((draft) => draft.is_saved) ??
+        nextDrafts.find((draft) => draft.local_key !== activeDraft.local_key) ??
+        nextDrafts[0]
+
+      setConfigDrafts(nextDrafts)
+      setActiveDraftKey(nextActiveDraft.local_key)
+      setConfigDeleteConfirmOpen(false)
+      setConfigError('')
+      setConfigFeedback(`${removedName} 已删除`)
       return
     }
 
@@ -836,27 +853,12 @@ function ConfigPage(props: ConfigPageProps) {
             <button
               className="danger-action"
               onClick={props.onDelete}
-              disabled={props.configDeleting || !props.activeDraft?.is_saved}
+              disabled={props.configDeleting}
             >
               <Icon name="close" />
               <span>{props.configDeleting ? '删除中...' : '删除配置'}</span>
             </button>
           </div>
-
-          {props.configDeleteConfirmOpen && props.activeDraft?.is_saved && (
-            <div className="delete-confirm-panel">
-              <strong>确认删除当前配置？</strong>
-              <p>删除后将无法继续用于查询，但不会影响已生成的历史查询记录。</p>
-              <div className="delete-confirm-actions">
-                <button className="secondary-action" onClick={props.onCancelDelete} disabled={props.configDeleting}>
-                  取消
-                </button>
-                <button className="danger-action" onClick={props.onConfirmDelete} disabled={props.configDeleting}>
-                  {props.configDeleting ? '删除中...' : '确认删除'}
-                </button>
-              </div>
-            </div>
-          )}
         </section>
 
         <section className="glass-panel section-panel">
@@ -897,6 +899,35 @@ function ConfigPage(props: ConfigPageProps) {
           )}
         </section>
       </div>
+
+      {props.configDeleteConfirmOpen && props.activeDraft && (
+        <div className="delete-confirm-overlay" onClick={props.onCancelDelete}>
+          <div className="delete-confirm-dialog glass-panel" onClick={(event) => event.stopPropagation()}>
+            <strong>{props.activeDraft.is_saved ? '确认删除当前配置？' : '确认删除当前未保存配置？'}</strong>
+            <p>
+              {props.activeDraft.is_saved
+                ? '删除后将无法继续用于查询，但不会影响已生成的历史查询记录。'
+                : '删除后当前未保存的配置内容将直接丢弃。'}
+            </p>
+            <div className="delete-confirm-actions">
+              <button
+                className="secondary-action"
+                onClick={props.onCancelDelete}
+                disabled={props.configDeleting}
+              >
+                取消
+              </button>
+              <button
+                className="danger-action"
+                onClick={props.onConfirmDelete}
+                disabled={props.configDeleting}
+              >
+                {props.configDeleting ? '删除中...' : '确认删除'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   )
 }

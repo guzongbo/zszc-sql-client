@@ -415,24 +415,37 @@ select:focus {
   background: rgba(255, 247, 237, 0.88);
 }
 
-.delete-confirm-panel {
+.delete-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(229, 236, 250, 0.38);
+  backdrop-filter: blur(8px);
+}
+
+.delete-confirm-dialog {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  margin-top: 14px;
-  padding: 14px 16px;
-  border-radius: 18px;
+  width: min(420px, 100%);
+  padding: 18px 20px;
+  border-radius: 22px;
   border: 1px solid rgba(253, 186, 116, 0.72);
   background:
     linear-gradient(180deg, rgba(255, 251, 235, 0.96), rgba(255, 247, 237, 0.92)),
     rgba(255, 247, 237, 0.88);
+  box-shadow: 0 24px 56px rgba(91, 72, 44, 0.18);
 }
 
-.delete-confirm-panel strong {
+.delete-confirm-dialog strong {
   color: #7c2d12;
 }
 
-.delete-confirm-panel p {
+.delete-confirm-dialog p {
   margin: 0;
   color: #9a6b46;
 }

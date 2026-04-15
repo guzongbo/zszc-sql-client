@@ -4630,10 +4630,9 @@ function App() {
                                                   onClick={() => {
                                                     selectDatabase(profile.id, database.name)
                                                     setExpandedKeys((previous) =>
-                                                      expandAncestorsForDatabase(
+                                                      expandAncestorsForProfileNode(
                                                         previous,
                                                         profile,
-                                                        database.name,
                                                       ),
                                                     )
                                                   }}
@@ -6633,6 +6632,12 @@ function expandAncestorsForDatabase(
   const next = expandAncestorsForProfile(previous, profile)
   next.add(`profile:${profile.id}`)
   next.add(`database:${buildDatabaseKey(profile.id, databaseName)}`)
+  return next
+}
+
+function expandAncestorsForProfileNode(previous: Set<string>, profile: ConnectionProfile) {
+  const next = expandAncestorsForProfile(previous, profile)
+  next.add(`profile:${profile.id}`)
   return next
 }
 

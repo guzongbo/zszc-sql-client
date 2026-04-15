@@ -28,7 +28,9 @@
 - 插件打包
   - `macos-14`
   - 通过自动发现插件目录生成矩阵，为每个插件创建独立打包 job
-  - 每个插件 job 内通过 Rust target 与 `cargo-xwin` 完成 `mac Apple`、`mac Intel`、`Windows x64` 三端后端构建
+  - 每个插件 job 内显式指定 `darwin-aarch64,darwin-x86_64,windows-x86_64` 三端目标
+  - 通过 Rust target 与 `cargo-xwin` 完成 `mac Apple`、`mac Intel`、`Windows x64` 三端后端构建
+  - 使用 `setup-node`、`rust-cache` 与 `cargo-xwin` 二进制缓存减少重复安装与重复编译
 
 ## Artifact 产物
 
@@ -38,6 +40,7 @@
   - `zszc-sql-client-win-x64-nsis`
 - 插件
   - 每个插件目录名会生成一个同名 artifact
+  - 每个 `.zszc-plugin` 都会校验是否同时包含 `darwin-aarch64`、`darwin-x86_64`、`windows-x86_64`
   - 当前示例：`password-util-plugin`、`mock-id-generator-plugin`、`dingtalk-contact-change-plugin`
 
 ## 维护约定

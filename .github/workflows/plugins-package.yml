@@ -29,27 +29,9 @@ jobs:
         shell: bash
         run: |
           matrix="$(
-            python3 - <<'PY'
-            import json
-            from pathlib import Path
-
-            plugins = []
-            for manifest in sorted(Path("plugins").glob("*/package-plugin.mjs")):
-                plugin_dir = manifest.parent.as_posix()
-                plugins.append({
-                    "plugin_name": manifest.parent.name,
-                    "plugin_dir": plugin_dir,
-                    "frontend_dir": f"{plugin_dir}/frontend",
-                    "backend_dir": f"{plugin_dir}/backend",
-                })
-
-            if not plugins:
-                raise SystemExit("未找到可打包插件")
-
-            print(json.dumps({"include": plugins}, ensure_ascii=False))
-            PY
+            python3 -c 'import json, sys; from pathlib import Path; plugins = [{"plugin_name": manifest.parent.name, "plugin_dir": manifest.parent.as_posix(), "frontend_dir": f"{manifest.parent.as_posix()}/frontend", "backend_dir": f"{manifest.parent.as_posix()}/backend"} for manifest in sorted(Path("plugins").glob("*/package-plugin.mjs"))]; sys.exit("未找到可打包插件") if not plugins else print(json.dumps({"include": plugins}, ensure_ascii=False))'
           )"
-          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          printf 'matrix=%s\n' "$matrix" >> "$GITHUB_OUTPUT"
 
   package-plugin:
     needs: discover-plugins

@@ -538,21 +538,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "btoi"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3b5ab9db53bcda568284df0fd39f6eac24ad6f7ba7ff1168b9e76eba6576b976"
-dependencies = [
- "num-traits",
-]
-
-[[package]]
-name = "bufstream"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40e38929add23cdf8a366df9b0e088953150724bcbe5fc330b0d8eb3b328eec8"
-
-[[package]]
 name = "bumpalo"
 version = "3.20.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1130,17 +1115,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "rustc_version",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "derive_utils"
-version = "0.15.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "362f47930db19fe7735f527e6595e4900316b893ebf6d48ad3d31be928d57dd6"
-dependencies = [
- "proc-macro2",
- "quote",
  "syn 2.0.117",
 ]
 
@@ -2407,15 +2381,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-enum"
-version = "1.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7de9008599afe8527a8c9d70423437363b321649161e98473f433de802d76107"
-dependencies = [
- "derive_utils",
-]
-
-[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2725,12 +2690,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "lru"
-version = "0.16.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1dc47f592c06f33f8e3aea9591776ec7c9f9e4124778ff8a3c3b87159f7e593"
-
-[[package]]
 name = "mac"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2867,29 +2826,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mysql"
-version = "28.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4a732193888328fc060ab901c0ed1355521267a51ffbfd9a0b3786434c6b8e7f"
-dependencies = [
- "bufstream",
- "bytes",
- "crossbeam-queue",
- "crossbeam-utils",
- "flate2",
- "io-enum",
- "libc",
- "lru 0.16.3",
- "mysql_common 0.37.1",
- "named_pipe",
- "pem",
- "percent-encoding",
- "socket2 0.6.3",
- "twox-hash 2.1.2",
- "url",
-]
-
-[[package]]
 name = "mysql-common-derive"
 version = "0.31.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2908,24 +2844,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mysql-common-derive"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "66f62cad7623a9cb6f8f64037f0c4f69c8db8e82914334a83c9788201c2c1bfa"
-dependencies = [
- "darling 0.20.11",
- "heck 0.5.0",
- "num-bigint",
- "proc-macro-crate 3.5.0",
- "proc-macro-error2",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
- "termcolor",
- "thiserror 2.0.18",
-]
-
-[[package]]
 name = "mysql_async"
 version = "0.34.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2938,8 +2856,8 @@ dependencies = [
  "futures-sink",
  "futures-util",
  "keyed_priority_queue",
- "lru 0.12.5",
- "mysql_common 0.32.4",
+ "lru",
+ "mysql_common",
  "pem",
  "percent-encoding",
  "pin-project",
@@ -2953,7 +2871,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
- "twox-hash 1.6.3",
+ "twox-hash",
  "url",
  "webpki",
  "webpki-roots 0.26.11",
@@ -2970,7 +2888,7 @@ dependencies = [
  "bindgen",
  "bitflags 2.11.0",
  "bitvec",
- "btoi 0.4.3",
+ "btoi",
  "byteorder",
  "bytes",
  "cc",
@@ -2979,7 +2897,7 @@ dependencies = [
  "flate2",
  "frunk",
  "lazy_static",
- "mysql-common-derive 0.31.2",
+ "mysql-common-derive",
  "num-bigint",
  "num-traits",
  "rand 0.8.5",
@@ -2996,42 +2914,6 @@ dependencies = [
  "time",
  "uuid",
  "zstd",
-]
-
-[[package]]
-name = "mysql_common"
-version = "0.37.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bffc2127d4035fa5a614935c663a15a4468e64e798473e0cc21c8df40a607588"
-dependencies = [
- "base64 0.22.1",
- "bitflags 2.11.0",
- "btoi 0.5.0",
- "byteorder",
- "bytes",
- "crc32fast",
- "flate2",
- "getrandom 0.3.4",
- "mysql-common-derive 0.32.1",
- "num-bigint",
- "num-traits",
- "regex",
- "saturating",
- "serde",
- "serde_json",
- "sha1",
- "sha2",
- "thiserror 2.0.18",
- "uuid",
-]
-
-[[package]]
-name = "named_pipe"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ad9c443cce91fc3e12f017290db75dde490d685cdaaf508d7159d7cf41f0eb2b"
-dependencies = [
- "winapi",
 ]
 
 [[package]]
@@ -5690,12 +5572,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "twox-hash"
-version = "2.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ea3136b675547379c4bd395ca6b938e5ad3c3d20fad76e7fe85f9e0d011419c"
-
-[[package]]
 name = "typeid"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7182,7 +7058,6 @@ dependencies = [
  "chrono",
  "futures",
  "hex",
- "mysql",
  "mysql_async",
  "redis",
  "regex",

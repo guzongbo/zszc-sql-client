@@ -1,6 +1,6 @@
 use super::{
-    MysqlService, build_table_data_row, normalize_console_sql, normalize_identifier_name,
-    normalize_raw_clause, quote_identifier, validate_raw_clause,
+    MysqlQueryResult, MysqlService, collect_all_rows_from_result, normalize_console_sql,
+    normalize_identifier_name, normalize_raw_clause, quote_identifier, validate_raw_clause,
 };
 use crate::models::{
     ConnectionProfile, ExportDataFileResponse, ExportFileFormat, ExportQueryResultFileRequest,
@@ -9,28 +9,31 @@ use crate::models::{
     TableDataRow,
 };
 use anyhow::{Context, Result, ensure};
-use mysql::prelude::Queryable;
+use mysql_async::Conn;
+use mysql_async::prelude::Queryable;
 use serde_json::{Map, Value as JsonValue};
 use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::Path;
 
 impl MysqlService {
-    pub fn export_table_data_file(
+    pub async fn export_table_data_file(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportTableDataFileRequest,
     ) -> Result<ExportDataFileResponse> {
         if matches!(payload.export_format, ExportFileFormat::Sql) {
-            let sql_text = self.export_table_data_sql_text(
-                profile,
-                &ExportTableDataSqlTextRequest {
-                    load_payload: payload.load_payload.clone(),
-                    scope: payload.scope,
-                    columns: payload.columns.clone(),
-                    rows: payload.rows.clone(),
-                },
-            )?;
+            let sql_text = self
+                .export_table_data_sql_text(
+                    profile,
+                    &ExportTableDataSqlTextRequest {
+                        load_payload: payload.load_payload.clone(),
+                        scope: payload.scope,
+                        columns: payload.columns.clone(),
+                        rows: payload.rows.clone(),
+                    },
+                )
+                .await?;
             write_text_to_file(&payload.file_path, &sql_text.content)?;
 
             return Ok(ExportDataFileResponse {
@@ -42,7 +45,7 @@ impl MysqlService {
         }
 
         match payload.scope {
-            ExportScope::AllRows => self.export_all_table_rows(profile, payload),
+            ExportScope::AllRows => self.export_all_table_rows(profile, payload).await,
             ExportScope::CurrentPage | ExportScope::SelectedRows => write_rows_to_file(
                 &payload.file_path,
                 payload.export_format,
@@ -53,21 +56,23 @@ impl MysqlService {
         }
     }
 
-    pub fn export_query_result_file(
+    pub async fn export_query_result_file(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportQueryResultFileRequest,
     ) -> Result<ExportDataFileResponse> {
         if matches!(payload.export_format, ExportFileFormat::Sql) {
-            let sql_text = self.export_query_result_sql_text(
-                profile,
-                &ExportQueryResultSqlTextRequest {
-                    execute_payload: payload.execute_payload.clone(),
-                    scope: payload.scope,
-                    columns: payload.columns.clone(),
-                    rows: payload.rows.clone(),
-                },
-            )?;
+            let sql_text = self
+                .export_query_result_sql_text(
+                    profile,
+                    &ExportQueryResultSqlTextRequest {
+                        execute_payload: payload.execute_payload.clone(),
+                        scope: payload.scope,
+                        columns: payload.columns.clone(),
+                        rows: payload.rows.clone(),
+                    },
+                )
+                .await?;
             write_text_to_file(&payload.file_path, &sql_text.content)?;
 
             return Ok(ExportDataFileResponse {
@@ -79,7 +84,7 @@ impl MysqlService {
         }
 
         match payload.scope {
-            ExportScope::AllRows => self.export_all_query_rows(profile, payload),
+            ExportScope::AllRows => self.export_all_query_rows(profile, payload).await,
             ExportScope::CurrentPage | ExportScope::SelectedRows => write_rows_to_file(
                 &payload.file_path,
                 payload.export_format,
@@ -90,14 +95,15 @@ impl MysqlService {
         }
     }
 
-    pub fn export_table_data_sql_text(
+    pub async fn export_table_data_sql_text(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportTableDataSqlTextRequest,
     ) -> Result<ExportSqlTextResponse> {
         let (columns, rows) = match payload.scope {
             ExportScope::AllRows => {
-                self.load_all_table_export_rows(profile, &payload.load_payload)?
+                self.load_all_table_export_rows(profile, &payload.load_payload)
+                    .await?
             }
             ExportScope::CurrentPage | ExportScope::SelectedRows => {
                 (payload.columns.clone(), payload.rows.clone())
@@ -118,14 +124,15 @@ impl MysqlService {
         })
     }
 
-    pub fn export_query_result_sql_text(
+    pub async fn export_query_result_sql_text(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportQueryResultSqlTextRequest,
     ) -> Result<ExportSqlTextResponse> {
         let (columns, rows) = match payload.scope {
             ExportScope::AllRows => {
-                self.load_all_query_export_rows(profile, &payload.execute_payload)?
+                self.load_all_query_export_rows(profile, &payload.execute_payload)
+                    .await?
             }
             ExportScope::CurrentPage | ExportScope::SelectedRows => {
                 (payload.columns.clone(), payload.rows.clone())
@@ -140,7 +147,7 @@ impl MysqlService {
         })
     }
 
-    fn export_all_table_rows(
+    async fn export_all_table_rows(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportTableDataFileRequest,
@@ -153,11 +160,13 @@ impl MysqlService {
         validate_raw_clause(normalized_where_clause.as_deref())?;
         validate_raw_clause(normalized_order_by_clause.as_deref())?;
 
-        let table_context = self.load_table_data_context(
-            profile,
-            &payload.load_payload.database_name,
-            &payload.load_payload.table_name,
-        )?;
+        let table_context = self
+            .load_table_data_context(
+                profile,
+                &payload.load_payload.database_name,
+                &payload.load_payload.table_name,
+            )
+            .await?;
         let sql = build_full_table_export_sql(
             &payload.load_payload.database_name,
             &payload.load_payload.table_name,
@@ -165,51 +174,54 @@ impl MysqlService {
             normalized_order_by_clause.as_deref(),
         );
 
-        self.with_conn(profile, |connection| {
-            let result = connection
-                .query_iter(sql.as_str())
-                .context("导出表数据失败")?;
-            write_query_result_to_file(
-                result,
-                &payload.file_path,
-                payload.export_format,
-                ExportScope::AllRows,
-                &table_context.columns,
-            )
-        })
+        let mut connection = self.get_conn(profile).await?;
+        let result = connection
+            .query_iter(sql.as_str())
+            .await
+            .context("导出表数据失败")?;
+        write_query_result_to_file(
+            result,
+            &payload.file_path,
+            payload.export_format,
+            ExportScope::AllRows,
+            &table_context.columns,
+        )
+        .await
     }
 
-    fn export_all_query_rows(
+    async fn export_all_query_rows(
         &self,
         profile: &ConnectionProfile,
         payload: &ExportQueryResultFileRequest,
     ) -> Result<ExportDataFileResponse> {
         let normalized_sql = normalize_console_sql(&payload.execute_payload.sql)?;
 
-        self.with_conn(profile, |connection| {
-            prepare_query_result_connection(
-                connection,
-                payload.execute_payload.database_name.as_deref(),
-            )?;
+        let mut connection = self.get_conn(profile).await?;
+        prepare_query_result_connection(
+            &mut connection,
+            payload.execute_payload.database_name.as_deref(),
+        )
+        .await?;
 
-            let result = connection
-                .query_iter(normalized_sql.as_str())
-                .context("导出查询结果失败")?;
-            let columns = extract_query_result_columns(&result);
+        let result = connection
+            .query_iter(normalized_sql.as_str())
+            .await
+            .context("导出查询结果失败")?;
+        let columns = extract_query_result_columns(&result);
 
-            ensure!(!columns.is_empty(), "当前 SQL 没有结果集，无法导出");
+        ensure!(!columns.is_empty(), "当前 SQL 没有结果集，无法导出");
 
-            write_query_result_to_file(
-                result,
-                &payload.file_path,
-                payload.export_format,
-                ExportScope::AllRows,
-                &columns,
-            )
-        })
+        write_query_result_to_file(
+            result,
+            &payload.file_path,
+            payload.export_format,
+            ExportScope::AllRows,
+            &columns,
+        )
+        .await
     }
 
-    fn load_all_table_export_rows(
+    async fn load_all_table_export_rows(
         &self,
         profile: &ConnectionProfile,
         payload: &crate::models::LoadTableDataPayload,
@@ -220,8 +232,9 @@ impl MysqlService {
         validate_raw_clause(normalized_where_clause.as_deref())?;
         validate_raw_clause(normalized_order_by_clause.as_deref())?;
 
-        let table_context =
-            self.load_table_data_context(profile, &payload.database_name, &payload.table_name)?;
+        let table_context = self
+            .load_table_data_context(profile, &payload.database_name, &payload.table_name)
+            .await?;
         let sql = build_full_table_export_sql(
             &payload.database_name,
             &payload.table_name,
@@ -229,34 +242,34 @@ impl MysqlService {
             normalized_order_by_clause.as_deref(),
         );
 
-        self.with_conn(profile, |connection| {
-            let result = connection
-                .query_iter(sql.as_str())
-                .context("导出表数据失败")?;
-            let rows = collect_query_rows(result, &table_context.columns)?;
-            Ok((table_context.columns.clone(), rows))
-        })
+        let mut connection = self.get_conn(profile).await?;
+        let result = connection
+            .query_iter(sql.as_str())
+            .await
+            .context("导出表数据失败")?;
+        let rows = collect_query_rows(result, &table_context.columns).await?;
+        Ok((table_context.columns.clone(), rows))
     }
 
-    fn load_all_query_export_rows(
+    async fn load_all_query_export_rows(
         &self,
         profile: &ConnectionProfile,
         payload: &crate::models::ExecuteSqlPayload,
     ) -> Result<(Vec<TableDataColumn>, Vec<TableDataRow>)> {
         let normalized_sql = normalize_console_sql(&payload.sql)?;
 
-        self.with_conn(profile, |connection| {
-            prepare_query_result_connection(connection, payload.database_name.as_deref())?;
+        let mut connection = self.get_conn(profile).await?;
+        prepare_query_result_connection(&mut connection, payload.database_name.as_deref()).await?;
 
-            let result = connection
-                .query_iter(normalized_sql.as_str())
-                .context("导出查询结果失败")?;
-            let columns = extract_query_result_columns(&result);
+        let result = connection
+            .query_iter(normalized_sql.as_str())
+            .await
+            .context("导出查询结果失败")?;
+        let columns = extract_query_result_columns(&result);
 
-            ensure!(!columns.is_empty(), "当前 SQL 没有结果集，无法导出");
-            let rows = collect_query_rows(result, &columns)?;
-            Ok((columns, rows))
-        })
+        ensure!(!columns.is_empty(), "当前 SQL 没有结果集，无法导出");
+        let rows = collect_query_rows(result, &columns).await?;
+        Ok((columns, rows))
     }
 }
 
@@ -285,8 +298,8 @@ fn build_full_table_export_sql(
     sql
 }
 
-fn prepare_query_result_connection(
-    connection: &mut mysql::PooledConn,
+async fn prepare_query_result_connection(
+    connection: &mut Conn,
     database_name: Option<&str>,
 ) -> Result<()> {
     if let Some(database_name) = database_name {
@@ -296,18 +309,16 @@ fn prepare_query_result_connection(
                 "USE {}",
                 quote_identifier(&normalized_database_name)
             ))
+            .await
             .context("切换数据库失败")?;
     }
 
     Ok(())
 }
 
-fn extract_query_result_columns(
-    result: &mysql::QueryResult<'_, '_, '_, mysql::Text>,
-) -> Vec<TableDataColumn> {
+fn extract_query_result_columns(result: &MysqlQueryResult<'_>) -> Vec<TableDataColumn> {
     result
-        .columns()
-        .as_ref()
+        .columns_ref()
         .iter()
         .map(|column| TableDataColumn {
             name: column.name_str().to_string(),
@@ -321,45 +332,39 @@ fn extract_query_result_columns(
         .collect::<Vec<_>>()
 }
 
-fn collect_query_rows(
-    result: mysql::QueryResult<'_, '_, '_, mysql::Text>,
+async fn collect_query_rows(
+    result: MysqlQueryResult<'_>,
     columns: &[TableDataColumn],
 ) -> Result<Vec<TableDataRow>> {
     let column_names = columns
         .iter()
         .map(|column| column.name.clone())
         .collect::<Vec<_>>();
-    let mut rows = Vec::new();
-
-    for row_result in result {
-        rows.push(build_table_data_row(row_result?, &column_names, &[])?);
-    }
-
-    Ok(rows)
+    collect_all_rows_from_result(result, &column_names, &[]).await
 }
 
-fn write_query_result_to_file(
-    result: mysql::QueryResult<'_, '_, '_, mysql::Text>,
+async fn write_query_result_to_file(
+    mut result: MysqlQueryResult<'_>,
     file_path: &str,
     export_format: ExportFileFormat,
     scope: ExportScope,
     columns: &[TableDataColumn],
 ) -> Result<ExportDataFileResponse> {
     let column_names = result
-        .columns()
-        .as_ref()
+        .columns_ref()
         .iter()
         .map(|column| column.name_str().to_string())
         .collect::<Vec<_>>();
     let mut writer = ExportFileWriter::create(file_path, export_format, columns)?;
     let mut row_count = 0_u64;
 
-    for row_result in result {
-        let row = build_table_data_row(row_result?, &column_names, &[])?;
+    while let Some(row) = result.next().await.context("读取结果集行失败")? {
+        let row = super::build_table_data_row(row, &column_names, &[])?;
         writer.write_row(&row.values)?;
         row_count += 1;
     }
 
+    result.drop_result().await.context("清理结果集失败")?;
     writer.finish()?;
     Ok(ExportDataFileResponse {
         file_path: file_path.to_string(),

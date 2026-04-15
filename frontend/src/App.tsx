@@ -3,12 +3,11 @@ import {
   lazy,
   useDeferredValue,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
-  type RefObject,
-  type ReactNode,
 } from 'react'
 import './App.css'
 import {
@@ -63,7 +62,6 @@ import {
   startStructureCompareTask,
   testConnectionProfile,
   uninstallPlugin,
-  writeClipboardText,
 } from './api'
 import {
   getDataCompareActionTotalCount,
@@ -94,350 +92,110 @@ import {
   createGridRow,
 } from './features/table-data/dataMutations'
 import type { ConsoleTab, DataGridRow, DataTab } from './features/workspace/types'
-import { WorkspaceSwitcher } from './features/workspace/WorkspaceSwitcher'
-import { EmptyNotice } from './shared/components/EmptyNotice'
-import { PluginManagerModal } from './features/plugins/PluginManagerModal'
+import {
+  createGroupAssignmentState,
+  createProfileEditorState,
+  databaseWorkspaceId,
+  defaultCompareForm,
+  defaultConnectionForm,
+  defaultDataCompareState,
+  defaultStructureCompareState,
+  type ConfirmDialogState,
+  type CreateDatabaseDialogState,
+  type DesignTab,
+  type ExportDialogState,
+  type GroupAssignmentTab,
+  type OutputLogEntry,
+  type ProfileTab,
+  type ProfileEditorState,
+  type RailSection,
+  type SelectionState,
+  type SqlPreviewState,
+  type ToastItem,
+  type ToastTone,
+  type TreeContextMenuState,
+  type WorkspacePanelKey,
+  type WorkspaceTab,
+  redisWorkspaceId,
+} from './features/workspace/appTypes'
+import {
+  buildDatabaseKey,
+  buildDataSourceTreeGroups,
+  buildNavigationTreeGroups,
+  expandAncestorsForProfile,
+  expandAncestorsForProfileNode,
+  expandAncestorsForTable,
+  normalizeGroupName,
+  normalizeProfileForm,
+  profileToForm,
+  sortDataSourceGroups,
+  sortProfiles,
+  upsertProfile,
+} from './features/workspace/navigation'
+import {
+  buildCreateTablePreviewSql,
+  buildDataCompareHistoryInput,
+  buildDataCompareSqlFileName,
+  buildDataMutationPreviewSql,
+  buildFullDataType,
+  buildQueryResultExportFileName,
+  buildStructureCompareHistoryInput,
+  buildStructureCompareSqlFileName,
+  buildTableDataExportFileName,
+  buildTableDataSql,
+  copyTextToClipboard,
+  createClientId,
+  createDraftColumn,
+  formatOutputTimestamp,
+  getExportScopeText,
+  inferDefaultCellValue,
+  parsePositiveIntegerOrNull,
+  prettifySql,
+  quoteIdentifier,
+  stripDraftColumn,
+} from './features/workspace/appHelpers'
+import { AppOverlays } from './features/workspace/AppOverlays'
+import { AppWindowBar } from './features/workspace/AppWindowBar'
+import { DatabaseNavigationPane } from './features/workspace/DatabaseNavigationPane'
+import { WorkspaceDatasourceTabs } from './features/workspace/WorkspaceDatasourceTabs'
+import {
+  OutputDock,
+  WorkspaceLoadingState,
+  WorkspacePanelPlaceholder,
+} from './shared/components/AppChrome'
 import { PluginWorkspace } from './features/plugins/PluginWorkspace'
+import {
+  shouldIgnoreWindowDragTarget,
+  startDesktopWindowDragging,
+  toggleDesktopWindowMaximize,
+} from './shared/utils/desktopWindow'
 import type {
   AssignProfilesToDataSourceGroupResult,
   AppBootstrap,
   CellValue,
   CompareDetailType,
-  ExecuteSqlPayload,
   ExportFileFormat,
   ExportScope,
-  CompareHistoryInput,
   CompareHistoryItem,
   CompareHistorySummary,
   CompareHistoryType,
   ConnectionProfile,
-  CreateDatabasePayload,
   DatabaseEntry,
   DataCompareRequest,
   DataCompareResponse,
   DataSourceGroup,
   InstalledPlugin,
   JsonRecord,
-  LoadTableDataPayload,
   SaveConnectionProfilePayload,
   RuntimeMetrics,
   SqlAutocompleteSchema,
   StructureCompareRequest,
   StructureCompareResponse,
   StructureDetailCategory,
-  TableColumn,
-  TableDataColumn,
   TableDataRow,
+  TableColumn,
   TableEntry,
 } from './types'
-
-type ToastTone = 'success' | 'error' | 'info'
-
-type ToastItem = {
-  id: string
-  tone: ToastTone
-  message: string
-}
-
-type SelectionState =
-  | { kind: 'none' }
-  | { kind: 'profile'; profile_id: string }
-  | { kind: 'database'; profile_id: string; database_name: string }
-  | { kind: 'table'; profile_id: string; database_name: string; table_name: string }
-
-type DesignDraftColumn = TableColumn & {
-  client_id: string
-  selected: boolean
-  origin_name: string | null
-}
-
-type ProfileEditorState = {
-  mode: 'create' | 'edit'
-  saving: boolean
-  testing: boolean
-  test_result: string
-  form: SaveConnectionProfilePayload
-  group_manager_open: boolean
-  group_busy: boolean
-  create_group_name: string
-  editing_group_id: string | null
-  editing_group_name: string
-}
-
-type DesignTabState = {
-  mode: 'edit' | 'create'
-  loading: boolean
-  error: string
-  ddl: string
-  draft_table_name: string
-  original_columns: TableColumn[]
-  draft_columns: DesignDraftColumn[]
-}
-
-type ProfileTab = {
-  id: string
-  kind: 'profile'
-  title: string
-  subtitle: string
-  status: 'ready' | 'busy'
-  error: string
-  editor: ProfileEditorState
-}
-
-type DesignTab = {
-  id: string
-  kind: 'design'
-  title: string
-  subtitle: string
-  status: 'loading' | 'ready' | 'error'
-  error: string
-  profile_id: string
-  database_name: string
-  table_name: string
-  design: DesignTabState
-}
-
-type GroupAssignmentTabState = {
-  target_group_id: string
-  filter_text: string
-  selected_profile_ids: string[]
-  submitting: boolean
-}
-
-type GroupAssignmentTab = {
-  id: string
-  kind: 'group_assignment'
-  title: string
-  subtitle: string
-  status: 'ready' | 'busy'
-  error: string
-  assignment: GroupAssignmentTabState
-}
-
-type WorkspaceTab =
-  | ProfileTab
-  | DesignTab
-  | DataTab
-  | ConsoleTab
-  | GroupAssignmentTab
-
-type SqlPreviewState = {
-  title: string
-  statements: string[]
-  confirm_label?: string
-  busy: boolean
-  on_confirm?: () => Promise<void>
-}
-
-type TreeContextMenuState =
-  | {
-      kind: 'group'
-      x: number
-      y: number
-      group_id: string
-      group_name: string
-    }
-  | { kind: 'profile'; x: number; y: number; profile_id: string }
-  | {
-      kind: 'database'
-      x: number
-      y: number
-      profile_id: string
-      database_name: string
-    }
-  | {
-      kind: 'table'
-      x: number
-      y: number
-      profile_id: string
-      database_name: string
-      table_name: string
-    }
-
-type CreateDatabaseDialogState = {
-  profile_id: string
-  data_source_name: string
-  form: CreateDatabasePayload
-  busy: boolean
-}
-
-type ConfirmDialogState = {
-  title: string
-  body: string
-  confirm_label: string
-  busy: boolean
-  on_confirm: () => Promise<void>
-}
-
-type ExportDialogState =
-  | {
-      kind: 'table_data'
-      title: string
-      subtitle: string
-      busy: boolean
-      format: ExportFileFormat
-      scope: ExportScope
-      columns: TableDataColumn[]
-      rows: TableDataRow[]
-      selected_rows: TableDataRow[]
-      load_payload: LoadTableDataPayload
-    }
-  | {
-      kind: 'query_result'
-      title: string
-      subtitle: string
-      busy: boolean
-      format: ExportFileFormat
-      scope: ExportScope
-      columns: TableDataColumn[]
-      rows: TableDataRow[]
-      selected_rows: TableDataRow[]
-      execute_payload: ExecuteSqlPayload
-    }
-
-type OutputLogEntry = {
-  id: string
-  tone: ToastTone
-  timestamp: string
-  scope: string
-  message: string
-  sql?: string
-}
-
-type DataSourceTreeGroup = {
-  key: string
-  group_id: string | null
-  group_name: string
-  profiles: ConnectionProfile[]
-}
-
-type NavigationTreeTable = {
-  entry: TableEntry
-}
-
-type NavigationTreeDatabase = {
-  entry: DatabaseEntry
-  matched_by_name: boolean
-  tables: NavigationTreeTable[]
-}
-
-type NavigationTreeProfile = {
-  entry: ConnectionProfile
-  matched_by_name: boolean
-  databases: NavigationTreeDatabase[]
-}
-
-type NavigationTreeGroup = {
-  key: string
-  group_id: string | null
-  group_name: string
-  profiles: NavigationTreeProfile[]
-}
-
-const ungroupedGroupName = '未分组'
-const databaseWorkspaceId = 'workspace:database'
-const redisWorkspaceId = 'workspace:redis'
-const commonDataTypes = [
-  'bigint',
-  'int',
-  'tinyint',
-  'varchar',
-  'text',
-  'decimal',
-  'datetime',
-  'timestamp',
-  'date',
-]
-
-const defaultConnectionForm: SaveConnectionProfilePayload = {
-  group_name: null,
-  data_source_name: '',
-  host: '',
-  port: 3306,
-  username: '',
-  password: '',
-}
-
-function createProfileEditorState(
-  mode: 'create' | 'edit',
-  form: SaveConnectionProfilePayload,
-): ProfileEditorState {
-  return {
-    mode,
-    saving: false,
-    testing: false,
-    test_result: '',
-    form,
-    group_manager_open: false,
-    group_busy: false,
-    create_group_name: '',
-    editing_group_id: null,
-    editing_group_name: '',
-  }
-}
-
-function createGroupAssignmentState(groupId: string): GroupAssignmentTabState {
-  return {
-    target_group_id: groupId,
-    filter_text: '',
-    selected_profile_ids: [],
-    submitting: false,
-  }
-}
-
-type RailSection = 'datasource' | 'structure_compare' | 'data_compare' | 'compare_history'
-type WorkspacePanelKey = 'left' | 'right' | 'bottom'
-
-const defaultCompareForm: CompareFormState = {
-  source_profile_id: '',
-  source_database_name: '',
-  target_profile_id: '',
-  target_database_name: '',
-}
-
-const defaultDataCompareState: DataCompareState = {
-  current_step: 1,
-  discovery: null,
-  selected_tables: [],
-  loading_tables: false,
-  running: false,
-  task_progress: null,
-  result: null,
-  current_request: null,
-  table_filter: '',
-  selection_by_table: {},
-  active_table_key: '',
-  active_detail_type: 'insert',
-  detail_pages: {},
-}
-
-const defaultStructureCompareState: StructureCompareState = {
-  current_step: 1,
-  loading: false,
-  task_progress: null,
-  result: null,
-  current_request: null,
-  selection_by_category: {
-    added: [],
-    modified: [],
-    deleted: [],
-  },
-  active_category: 'added',
-  expanded_detail_keys: [],
-  detail_cache: {},
-}
-
-const DataEditorView = lazy(() =>
-  import('./features/table-data/DataEditorView').then((module) => ({
-    default: module.DataEditorView,
-  })),
-)
-
-const ConsoleView = lazy(() =>
-  import('./features/sql-console/ConsoleView').then((module) => ({
-    default: module.ConsoleView,
-  })),
-)
 
 const DataCompareWorkspace = lazy(() =>
   import('./features/compare/DataCompareWorkspace').then((module) => ({
@@ -462,57 +220,6 @@ const RedisWorkspace = lazy(() =>
     default: module.RedisWorkspace,
   })),
 )
-
-const windowDragIgnoreSelector = [
-  'button',
-  'input',
-  'textarea',
-  'select',
-  'option',
-  'a',
-  '[role="button"]',
-  '[role="menu"]',
-  '[role="menuitem"]',
-  '[contenteditable="true"]',
-  '[data-window-drag-ignore="true"]',
-].join(', ')
-
-let startDesktopWindowDraggingTask: Promise<(() => Promise<void>) | null> | null = null
-let toggleDesktopWindowMaximizeTask: Promise<(() => Promise<void>) | null> | null = null
-
-async function startDesktopWindowDragging() {
-  if (startDesktopWindowDraggingTask == null) {
-    startDesktopWindowDraggingTask = Promise.all([
-      import('@tauri-apps/api/core'),
-      import('@tauri-apps/api/window'),
-    ]).then(([coreModule, windowModule]) => {
-      if (!coreModule.isTauri()) {
-        return null
-      }
-
-      return () => windowModule.getCurrentWindow().startDragging()
-    })
-  }
-
-  await (await startDesktopWindowDraggingTask)?.()
-}
-
-async function toggleDesktopWindowMaximize() {
-  if (toggleDesktopWindowMaximizeTask == null) {
-    toggleDesktopWindowMaximizeTask = Promise.all([
-      import('@tauri-apps/api/core'),
-      import('@tauri-apps/api/window'),
-    ]).then(([coreModule, windowModule]) => {
-      if (!coreModule.isTauri()) {
-        return null
-      }
-
-      return () => windowModule.getCurrentWindow().toggleMaximize()
-    })
-  }
-
-  await (await toggleDesktopWindowMaximizeTask)?.()
-}
 
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
@@ -591,6 +298,10 @@ function App() {
   )
   const deferredNavigationSearchText = useDeferredValue(navigationSearchText)
   const normalizedNavigationSearchText = deferredNavigationSearchText.trim().toLowerCase()
+  const ensureTablesLoadedEvent = useEffectEvent(
+    (profileId: string, databaseName: string) =>
+      ensureTablesLoaded(profileId, databaseName),
+  )
 
   useEffect(() => {
     let cancelled = false
@@ -808,7 +519,7 @@ function App() {
             continue
           }
 
-          await ensureTablesLoaded(profile.id, database.name)
+          await ensureTablesLoadedEvent(profile.id, database.name)
         }
       }
     }
@@ -4368,7 +4079,7 @@ function App() {
     }
 
     // 避免点击按钮、菜单等交互控件时误触发窗口拖拽。
-    if (target.closest(windowDragIgnoreSelector) != null) {
+    if (shouldIgnoreWindowDragTarget(target)) {
       return
     }
 
@@ -4391,49 +4102,21 @@ function App() {
       }}
     >
       <section className="workspace-shell">
-        <header className="window-bar" onPointerDown={handleWindowBarPointerDown}>
-          <div className="window-bar-content">
-            <WorkspaceSwitcher
-              activeWorkspaceId={activeWorkspaceId}
-              activeWorkspaceLabel={activeWorkspaceLabel}
-              databaseWorkspaceId={databaseWorkspaceId}
-              installedPlugins={installedPlugins}
-              onManagePlugins={handleOpenPluginManager}
-              onSelectWorkspace={handleSelectWorkspace}
-              onToggleMenu={() => setWorkspaceMenuOpen((previous) => !previous)}
-              redisWorkspaceId={redisWorkspaceId}
-              workspaceMenuOpen={workspaceMenuOpen}
-            />
-            <div
-              className="window-bar-center"
-              aria-label="布局面板开关"
-              data-window-drag-ignore="true"
-            >
-              <div className="panel-visibility-group">
-                {panelToggleItems.map((item) => (
-                  <button
-                    key={item.key}
-                    className={`panel-visibility-button ${item.active ? 'active' : ''}`}
-                    type="button"
-                    onClick={item.onClick}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="window-bar-metrics" aria-label="运行指标">
-              <div className="window-metric-chip">
-                <span className="window-metric-label">CPU</span>
-                <strong>{cpuText}</strong>
-              </div>
-              <div className="window-metric-chip">
-                <span className="window-metric-label">内存</span>
-                <strong>{memoryText}</strong>
-              </div>
-            </div>
-          </div>
-        </header>
+        <AppWindowBar
+          activeWorkspaceId={activeWorkspaceId}
+          activeWorkspaceLabel={activeWorkspaceLabel}
+          databaseWorkspaceId={databaseWorkspaceId}
+          installedPlugins={installedPlugins}
+          onManagePlugins={handleOpenPluginManager}
+          onPointerDown={handleWindowBarPointerDown}
+          onSelectWorkspace={handleSelectWorkspace}
+          onToggleMenu={() => setWorkspaceMenuOpen((previous) => !previous)}
+          panelToggleItems={panelToggleItems}
+          redisWorkspaceId={redisWorkspaceId}
+          workspaceMenuOpen={workspaceMenuOpen}
+          cpuText={cpuText}
+          memoryText={memoryText}
+        />
 
         {activePlugin ? (
           <section className="plugin-full-pane">
@@ -4510,567 +4193,214 @@ function App() {
             <div className="workspace-main-row">
               {leftPanelVisible ? (
                 <aside className="workspace-side-dock workspace-side-dock-left">
-                  <div className="navigation-pane">
-                    {activeSection === 'datasource' ? (
-                    <>
-                    <div className="pane-header">
-                      <div className="pane-title">
-                        <DatabaseGlyph />
-                        <strong>数据库导航</strong>
-                      </div>
-
-                      <div className="navigation-search-card">
-                        <input
-                          value={navigationSearchText}
-                          onChange={(event) => setNavigationSearchText(event.target.value)}
-                          placeholder="搜索连接名、数据库、表"
-                        />
-                        <small>数据库与表仅搜索已连接的数据源，表结果会逐步补齐。</small>
-                      </div>
-
-                      <div className="pane-actions">
-                        <SquareIconButton label="新增数据源" onClick={() => openProfileEditorTab()}>
-                          +
-                        </SquareIconButton>
-                        <SquareIconButton
-                          label="数据源属性"
-                          disabled={!selectedProfile}
-                          onClick={() => {
-                            if (selectedProfile) {
-                              openProfileEditorTab(selectedProfile)
-                            }
-                          }}
-                        >
-                          <DatabaseSettingsGlyph />
-                        </SquareIconButton>
-                        <SquareIconButton label="刷新" onClick={() => void refreshCurrentSelection()}>
-                          ↻
-                        </SquareIconButton>
-                        <SquareIconButton
-                          label="停止连接"
-                          disabled={!selectedProfile}
-                          onClick={() => void disconnectSelectedProfile()}
-                        >
-                          ■
-                        </SquareIconButton>
-                        <SquareActionButton
-                          label="控制台"
-                          disabled={selection.kind === 'none'}
-                          onClick={() => openConsoleFromSelection()}
-                        />
-                      </div>
-                    </div>
-
-                    <div className="tree-pane">
-                      {bootstrapError ? (
-                        <EmptyNotice title="初始化失败" text={bootstrapError} />
-                      ) : null}
-
-                      {!bootstrapError && profiles.length === 0 && dataSourceGroups.length === 0 ? (
-                        <EmptyNotice
-                          title="暂无数据源"
-                          text="点击左上角加号，在右侧工作区创建新的 MySQL 数据源。"
-                        />
-                      ) : null}
-
-                      {!bootstrapError &&
-                      navigationSearchText.trim() &&
-                      navigationTreeGroups.length === 0 ? (
-                        <EmptyNotice
-                          title="未找到匹配项"
-                          text="连接名可直接搜索；数据库和表仅在已连接的数据源中检索。"
-                        />
-                      ) : null}
-
-                      {navigationTreeGroups.map((group) => {
-                        const expanded = visibleExpandedKeys.has(group.key)
-
-                        return (
-                          <div className="tree-group" key={group.key}>
-                            <button
-                              className={`tree-row group-row ${selectedGroupKey === group.key ? 'selected' : ''}`}
-                              type="button"
-                              onClick={() => {
-                                setSelectedGroupKey(group.key)
-                                setSelection({ kind: 'none' })
-                                setTreeContextMenu(null)
-                              }}
-                              onDoubleClick={() => void toggleNodeExpansion(group.key)}
-                              onContextMenu={(event) => {
-                                event.preventDefault()
-                                event.stopPropagation()
-                                if (!group.group_id) {
-                                  return
-                                }
-
-                                setSelectedGroupKey(group.key)
-                                setSelection({ kind: 'none' })
-                                setTreeContextMenu({
-                                  kind: 'group',
-                                  x: Math.min(event.clientX, window.innerWidth - 208),
-                                  y: Math.min(event.clientY, window.innerHeight - 92),
-                                  group_id: group.group_id,
-                                  group_name: group.group_name,
-                                })
-                              }}
-                            >
-                              <span className="tree-caret">{expanded ? '▾' : '▸'}</span>
-                              <span className="tree-node-label">{group.group_name}</span>
-                              <span className="tree-node-meta">{group.profiles.length} 个数据源</span>
-                            </button>
-
-                            {expanded ? (
-                              <div className="tree-children">
-                                {group.profiles.length === 0 ? (
-                                  <div className="tree-empty-note">暂无数据源</div>
-                                ) : null}
-
-                                {group.profiles.map((profileView) => {
-                                  const profile = profileView.entry
-                                  const datasourceKey = `profile:${profile.id}`
-                                  const datasourceExpanded = visibleExpandedKeys.has(datasourceKey)
-                                  const databases = profileView.databases
-
-                                  return (
-                                    <div className="tree-group" key={profile.id}>
-                                      <button
-                                        className={`tree-row datasource-row ${
-                                          selection.kind === 'profile' &&
-                                          selection.profile_id === profile.id
-                                            ? 'selected'
-                                            : ''
-                                        }`}
-                                        type="button"
-                                        onClick={() => {
-                                          selectProfile(profile.id)
-                                          setExpandedKeys((previous) =>
-                                            expandAncestorsForProfile(previous, profile),
-                                          )
-                                        }}
-                                        onDoubleClick={() => {
-                                          selectProfile(profile.id)
-                                          void toggleNodeExpansion(datasourceKey, async () => {
-                                            await ensureDatabasesLoaded(profile.id)
-                                          })
-                                        }}
-                                        onContextMenu={(event) => {
-                                          event.preventDefault()
-                                          event.stopPropagation()
-                                          selectProfile(profile.id)
-                                          setTreeContextMenu({
-                                            kind: 'profile',
-                                            x: Math.min(event.clientX, window.innerWidth - 188),
-                                            y: Math.min(event.clientY, window.innerHeight - 140),
-                                            profile_id: profile.id,
-                                          })
-                                        }}
-                                      >
-                                        <span className="tree-caret">
-                                          {datasourceExpanded ? '▾' : '▸'}
-                                        </span>
-                                        <span
-                                          className={`connection-indicator connection-${
-                                            profileConnectionState[profile.id] ?? 'idle'
-                                          }`}
-                                        />
-                                        <span className="tree-node-label">{profile.data_source_name}</span>
-                                        <span className="tree-node-meta">
-                                          {nodeLoading[profile.id]
-                                            ? '加载中'
-                                            : databasesByProfile[profile.id]
-                                              ? `${(databasesByProfile[profile.id] ?? []).length} 个数据库`
-                                              : '待加载'}
-                                        </span>
-                                      </button>
-
-                                      {datasourceExpanded ? (
-                                        <div className="tree-children">
-                                          {databases.map((databaseView) => {
-                                            const database = databaseView.entry
-                                            const databaseKey = buildDatabaseKey(
-                                              profile.id,
-                                              database.name,
-                                            )
-                                            const databaseNodeKey = `database:${databaseKey}`
-                                            const databaseExpanded =
-                                              visibleExpandedKeys.has(databaseNodeKey)
-                                            const tables = databaseView.tables
-
-                                            return (
-                                              <div className="tree-group" key={databaseKey}>
-                                                <button
-                                                  className={`tree-row database-row ${
-                                                    selection.kind === 'database' &&
-                                                    selection.profile_id === profile.id &&
-                                                    selection.database_name === database.name
-                                                      ? 'selected'
-                                                      : ''
-                                                  }`}
-                                                  type="button"
-                                                  onClick={() => {
-                                                    selectDatabase(profile.id, database.name)
-                                                    setExpandedKeys((previous) =>
-                                                      expandAncestorsForProfileNode(
-                                                        previous,
-                                                        profile,
-                                                      ),
-                                                    )
-                                                  }}
-                                                  onDoubleClick={() => {
-                                                    selectDatabase(profile.id, database.name)
-                                                    void toggleNodeExpansion(
-                                                      databaseNodeKey,
-                                                      async () => {
-                                                        await ensureTablesLoaded(
-                                                          profile.id,
-                                                          database.name,
-                                                        )
-                                                      },
-                                                    )
-                                                  }}
-                                                  onContextMenu={(event) => {
-                                                    event.preventDefault()
-                                                    event.stopPropagation()
-                                                    selectDatabase(profile.id, database.name)
-                                                    setTreeContextMenu({
-                                                      kind: 'database',
-                                                      x: Math.min(
-                                                        event.clientX,
-                                                        window.innerWidth - 188,
-                                                      ),
-                                                      y: Math.min(
-                                                        event.clientY,
-                                                        window.innerHeight - 140,
-                                                      ),
-                                                      profile_id: profile.id,
-                                                      database_name: database.name,
-                                                    })
-                                                  }}
-                                                >
-                                                  <span className="tree-caret">
-                                                    {databaseExpanded ? '▾' : '▸'}
-                                                  </span>
-                                                  <TreeDatabaseGlyph />
-                                                  <span className="tree-node-label">
-                                                    {database.name}
-                                                  </span>
-                                                  <span className="tree-node-meta">
-                                                    {navigationSearchText.trim() && tables.length > 0
-                                                      ? `${tables.length} 个匹配表`
-                                                      : nodeLoading[databaseKey] &&
-                                                          !tablesByDatabase[databaseKey]
-                                                        ? '搜索中'
-                                                        : `${database.table_count} 张表`}
-                                                  </span>
-                                                </button>
-
-                                                {databaseExpanded ? (
-                                                  <div className="tree-children">
-                                                    {tables.map((table) => (
-                                                      <button
-                                                        className={`tree-row table-row ${
-                                                          selection.kind === 'table' &&
-                                                          selection.profile_id === profile.id &&
-                                                          selection.database_name === database.name &&
-                                                          selection.table_name === table.entry.name
-                                                            ? 'selected'
-                                                            : ''
-                                                        }`}
-                                                        key={`${databaseKey}:${table.entry.name}`}
-                                                        type="button"
-                                                        onClick={() => {
-                                                          selectTable(
-                                                            profile.id,
-                                                            database.name,
-                                                            table.entry.name,
-                                                          )
-                                                          setExpandedKeys((previous) =>
-                                                            expandAncestorsForTable(
-                                                              previous,
-                                                              profile,
-                                                              database.name,
-                                                            ),
-                                                          )
-                                                        }}
-                                                        onDoubleClick={() => {
-                                                          selectTable(
-                                                            profile.id,
-                                                            database.name,
-                                                            table.entry.name,
-                                                          )
-                                                          void openTableTab(
-                                                            'data',
-                                                            profile.id,
-                                                            database.name,
-                                                            table.entry.name,
-                                                          )
-                                                        }}
-                                                        onContextMenu={(event) => {
-                                                          event.preventDefault()
-                                                          event.stopPropagation()
-                                                          selectTable(
-                                                            profile.id,
-                                                            database.name,
-                                                            table.entry.name,
-                                                          )
-                                                          setTreeContextMenu({
-                                                            kind: 'table',
-                                                            x: Math.min(
-                                                              event.clientX,
-                                                              window.innerWidth - 188,
-                                                            ),
-                                                            y: Math.min(
-                                                              event.clientY,
-                                                              window.innerHeight - 220,
-                                                            ),
-                                                            profile_id: profile.id,
-                                                            database_name: database.name,
-                                                            table_name: table.entry.name,
-                                                          })
-                                                        }}
-                                                      >
-                                                        <TreeTableGlyph />
-                                                        <span className="tree-node-label">
-                                                          {table.entry.name}
-                                                        </span>
-                                                      </button>
-                                                    ))}
-                                                  </div>
-                                                ) : null}
-                                              </div>
-                                            )
-                                          })}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            ) : null}
-                          </div>
+                  <DatabaseNavigationPane
+                    activeSection={activeSection}
+                    bootstrapError={bootstrapError}
+                    compareHistoryType={compareHistoryType}
+                    dataSourceGroups={dataSourceGroups}
+                    databasesByProfile={databasesByProfile}
+                    navigationSearchText={navigationSearchText}
+                    navigationTreeGroups={navigationTreeGroups}
+                    nodeLoading={nodeLoading}
+                    profileConnectionState={profileConnectionState}
+                    profiles={profiles}
+                    selectedGroupKey={selectedGroupKey}
+                    selectedProfile={selectedProfile}
+                    selection={selection}
+                    tablesByDatabase={tablesByDatabase}
+                    visibleExpandedKeys={visibleExpandedKeys}
+                    visibleHistoryCount={visibleHistoryItems.length}
+                    onCompareHistoryTypeChange={setCompareHistoryType}
+                    onDisconnectSelectedProfile={() => void disconnectSelectedProfile()}
+                    onNavigationSearchTextChange={setNavigationSearchText}
+                    onOpenConsole={openConsoleFromSelection}
+                    onOpenProfileEditor={() => openProfileEditorTab()}
+                    onOpenSelectedProfileEditor={() => {
+                      if (selectedProfile) {
+                        openProfileEditorTab(selectedProfile)
+                      }
+                    }}
+                    onRefresh={() => void refreshCurrentSelection()}
+                    onSelectDatabase={(profileId, databaseName) => {
+                      selectDatabase(profileId, databaseName)
+                      const profile = profiles.find((item) => item.id === profileId)
+                      if (profile) {
+                        setExpandedKeys((previous) =>
+                          expandAncestorsForProfileNode(previous, profile),
                         )
-                      })}
-                    </div>
-                    </>
-                    ) : activeSection === 'data_compare' ? (
-                      <WorkspacePanelPlaceholder
-                        title="左侧面板"
-                        description="这里预留为数据对比的筛选、目录或资源树区域，当前先完成可展示与隐藏的骨架。"
-                        tone="accent"
-                      />
-                    ) : activeSection === 'structure_compare' ? (
-                      <WorkspacePanelPlaceholder
-                        title="左侧面板"
-                        description="这里预留为结构对比的筛选、分类或导航区域，当前先完成可展示与隐藏的骨架。"
-                        tone="accent"
-                      />
-                    ) : (
-                      <CompareSidebar
-                        title="对比记录"
-                        subtitle="本地保存的结构对比和数据对比记录，可用于回看统计与涉及表。"
-                      >
-                        <div className="compare-history-tabs">
-                          <button
-                            className={`flat-button ${compareHistoryType === 'data' ? 'primary' : ''}`}
-                            type="button"
-                            onClick={() => setCompareHistoryType('data')}
-                          >
-                            数据对比
-                          </button>
-                          <button
-                            className={`flat-button ${compareHistoryType === 'structure' ? 'primary' : ''}`}
-                            type="button"
-                            onClick={() => setCompareHistoryType('structure')}
-                          >
-                            结构对比
-                          </button>
-                        </div>
-                        <div className="compare-summary-list">
-                          <span>记录数 {visibleHistoryItems.length}</span>
-                          <span>当前筛选 {compareHistoryType === 'data' ? '数据对比' : '结构对比'}</span>
-                        </div>
-                      </CompareSidebar>
-                    )}
-                  </div>
+                      }
+                    }}
+                    onSelectGroup={(groupKey) => {
+                      setSelectedGroupKey(groupKey)
+                      setSelection({ kind: 'none' })
+                      setTreeContextMenu(null)
+                    }}
+                    onSelectProfile={(profileId) => {
+                      selectProfile(profileId)
+                      const profile = profiles.find((item) => item.id === profileId)
+                      if (profile) {
+                        setExpandedKeys((previous) =>
+                          expandAncestorsForProfile(previous, profile),
+                        )
+                      }
+                    }}
+                    onSelectTable={(profileId, databaseName, tableName) => {
+                      selectTable(profileId, databaseName, tableName)
+                      const profile = profiles.find((item) => item.id === profileId)
+                      if (profile) {
+                        setExpandedKeys((previous) =>
+                          expandAncestorsForTable(previous, profile, databaseName),
+                        )
+                      }
+                    }}
+                    onToggleDatabaseNode={(profileId, databaseName) => {
+                      void toggleNodeExpansion(
+                        `database:${buildDatabaseKey(profileId, databaseName)}`,
+                        async () => {
+                          await ensureTablesLoaded(profileId, databaseName)
+                        },
+                      )
+                    }}
+                    onToggleGroupNode={(groupKey) => {
+                      void toggleNodeExpansion(groupKey)
+                    }}
+                    onToggleProfileNode={(profileId) => {
+                      void toggleNodeExpansion(`profile:${profileId}`, async () => {
+                        await ensureDatabasesLoaded(profileId)
+                      })
+                    }}
+                    onTreeGroupContextMenu={(event, groupId, groupName) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      setSelectedGroupKey(`group:${normalizeGroupName(groupName)}`)
+                      setSelection({ kind: 'none' })
+                      setTreeContextMenu({
+                        kind: 'group',
+                        x: Math.min(event.clientX, window.innerWidth - 208),
+                        y: Math.min(event.clientY, window.innerHeight - 92),
+                        group_id: groupId,
+                        group_name: groupName,
+                      })
+                    }}
+                    onTreeDatabaseContextMenu={(event, profileId, databaseName) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      selectDatabase(profileId, databaseName)
+                      setTreeContextMenu({
+                        kind: 'database',
+                        x: Math.min(event.clientX, window.innerWidth - 188),
+                        y: Math.min(event.clientY, window.innerHeight - 140),
+                        profile_id: profileId,
+                        database_name: databaseName,
+                      })
+                    }}
+                    onTreeProfileContextMenu={(event, profileId) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      selectProfile(profileId)
+                      setTreeContextMenu({
+                        kind: 'profile',
+                        x: Math.min(event.clientX, window.innerWidth - 188),
+                        y: Math.min(event.clientY, window.innerHeight - 140),
+                        profile_id: profileId,
+                      })
+                    }}
+                    onTreeTableContextMenu={(event, profileId, databaseName, tableName) => {
+                      event.preventDefault()
+                      event.stopPropagation()
+                      selectTable(profileId, databaseName, tableName)
+                      setTreeContextMenu({
+                        kind: 'table',
+                        x: Math.min(event.clientX, window.innerWidth - 188),
+                        y: Math.min(event.clientY, window.innerHeight - 220),
+                        profile_id: profileId,
+                        database_name: databaseName,
+                        table_name: tableName,
+                      })
+                    }}
+                    onOpenTableData={(profileId, databaseName, tableName) => {
+                      void openTableTab('data', profileId, databaseName, tableName)
+                    }}
+                  />
                 </aside>
               ) : null}
 
               <section className="content-pane">
             {activeSection === 'datasource' ? (
-            <>
-            <div className="tab-bar">
-              {tabs.map((tab) => (
-                <button
-                  className={`tab-item ${activeTabId === tab.id ? 'active' : ''}`}
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveTabId(tab.id)}
-                >
-                  <span>{tab.title}</span>
-                  <small>{tab.subtitle}</small>
-                  <span
-                    className="tab-close"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      removeTab(tab.id)
-                    }}
-                  >
-                    ×
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            <div className="content-panel">
-              {activeTab?.kind === 'profile' ? (
-                <ProfileEditorView
-                  tab={activeTab}
-                  dataSourceGroups={dataSourceGroups}
-                  onFieldChange={updateProfileTabField}
-                  onToggleGroupManager={toggleProfileGroupManager}
-                  onCreateGroupNameChange={updateProfileGroupCreateName}
-                  onCreateGroup={createProfileGroupFromTab}
-                  onStartRenameGroup={startRenameProfileGroup}
-                  onCancelRenameGroup={cancelRenameProfileGroup}
-                  onEditingGroupNameChange={updateProfileEditingGroupName}
-                  onRenameGroup={renameProfileGroupFromTab}
-                  onDeleteGroup={deleteProfileGroupFromTab}
-                  onImportNavicat={() => void importNavicatProfiles()}
-                  onSave={saveProfileTab}
-                  onTest={testProfileTab}
-                  onDelete={deleteProfileFromTab}
-                />
-              ) : null}
-
-              {activeTab?.kind === 'design' ? (
-                <DesignEditorView
-                  tab={activeTab}
-                  onRefresh={() =>
-                    void refreshDesignTab(
-                      activeTab.id,
-                      activeTab.profile_id,
-                      activeTab.database_name,
-                      activeTab.table_name,
-                    )
-                  }
-                  onAddColumn={() => addDesignRow(activeTab.id)}
-                  onDeleteColumns={() => deleteSelectedDesignRows(activeTab.id)}
-                  onRestoreColumns={() => restoreSelectedDesignRows(activeTab.id)}
-                  onPreview={() => void previewDesignSql(activeTab)}
-                  onCommit={() => void commitDesignChanges(activeTab)}
-                  onToggleAll={(checked) => toggleAllDesignRows(activeTab.id, checked)}
-                  onToggleOne={(clientId, checked) =>
-                    toggleDesignRowSelection(activeTab.id, clientId, checked)
-                  }
-                  onTableNameChange={updateDesignDraftTableName}
-                  onChange={updateDesignRow}
-                />
-              ) : null}
-
-              {activeTab?.kind === 'data' ? (
-                <Suspense
-                  fallback={
-                    <WorkspaceLoadingState
-                      title="正在加载数据表工作区"
-                      text="正在初始化表数据编辑器。"
-                    />
-                  }
-                >
-                  <DataEditorView
-                    tab={activeTab}
-                    onRefresh={() =>
-                      void refreshDataTab(
-                        activeTab.id,
-                        activeTab.profile_id,
-                        activeTab.database_name,
-                        activeTab.table_name,
-                        activeTab.data.where_clause,
-                        activeTab.data.order_by_clause,
-                        activeTab.data.offset,
-                        activeTab.data.limit,
-                      )
-                    }
-                    onAddRow={() => addDataRow(activeTab.id)}
-                    onDeleteRows={() => deleteSelectedDataRows(activeTab.id)}
-                    onRestoreRows={() => restoreSelectedDataRows(activeTab.id)}
-                    onCommit={() => void commitDataChanges(activeTab)}
-                    onExport={() => openDataExportDialog(activeTab)}
-                    onApplyFilter={() =>
-                      void refreshDataTab(
-                        activeTab.id,
-                        activeTab.profile_id,
-                        activeTab.database_name,
-                        activeTab.table_name,
-                        activeTab.data.where_clause,
-                        activeTab.data.order_by_clause,
-                        0,
-                        activeTab.data.limit,
-                      )
-                    }
-                    onFirstPage={() => void changeDataPage(activeTab, 'first')}
-                    onPrevPage={() => void changeDataPage(activeTab, 'prev')}
-                    onNextPage={() => void changeDataPage(activeTab, 'next')}
-                    onLastPage={() => void changeDataPage(activeTab, 'last')}
-                    onQueryFieldChange={updateDataQueryField}
-                    onSelectRowsRange={(startClientId, endClientId, options) =>
-                      selectDataRowsRange(activeTab.id, startClientId, endClientId, options)
-                    }
-                    onValueChange={updateDataRow}
-                  />
-                </Suspense>
-              ) : null}
-
-              {activeTab?.kind === 'console' ? (
-                <Suspense
-                  fallback={
-                    <WorkspaceLoadingState
-                      title="正在加载 SQL 控制台"
-                      text="正在准备编辑器和结果面板。"
-                    />
-                  }
-                >
-                  <ConsoleView
-                    tab={activeTab}
-                    databaseOptions={databasesByProfile[activeTab.profile_id] ?? []}
-                    schemaTables={activeConsoleAutocomplete?.tables ?? []}
-                    schemaCatalog={activeConsoleSchemas}
-                    onResolveSchema={(databaseName) =>
-                      ensureSqlAutocompleteLoaded(activeTab.profile_id, databaseName, {
-                        silent: true,
-                      })
-                    }
-                    onDatabaseChange={updateConsoleDatabase}
-                    onFormat={formatConsoleSql}
-                    onSqlChange={updateConsoleSql}
-                    onExecute={() => void runConsoleSql(activeTab, 0)}
-                    onExport={() => openQueryResultExportDialog(activeTab)}
-                    onFirstPage={() => void changeConsolePage(activeTab, 'first')}
-                    onPrevPage={() => void changeConsolePage(activeTab, 'prev')}
-                    onNextPage={() => void changeConsolePage(activeTab, 'next')}
-                    onLastPage={() => void changeConsolePage(activeTab, 'last')}
-                    onSelectRowsRange={(startClientId, endClientId, options) =>
-                      selectConsoleRowsRange(activeTab.id, startClientId, endClientId, options)
-                    }
-                  />
-                </Suspense>
-              ) : null}
-
-              {activeTab?.kind === 'group_assignment' ? (
-                <GroupAssignmentView
-                  tab={activeTab}
-                  profiles={profiles}
-                  dataSourceGroups={dataSourceGroups}
-                  onFilterChange={updateGroupAssignmentFilter}
-                  onToggleProfile={toggleGroupAssignmentProfile}
-                  onSelectAll={selectAllGroupAssignmentProfiles}
-                  onClearSelection={clearGroupAssignmentSelection}
-                  onApply={applyProfilesToGroup}
-                />
-              ) : null}
-
-              {!activeTab ? <EmptyWorkspace /> : null}
-            </div>
-            </>
+              <WorkspaceDatasourceTabs
+                activeTab={activeTab}
+                activeTabId={activeTabId}
+                activeConsoleAutocomplete={activeConsoleAutocomplete}
+                activeConsoleSchemas={activeConsoleSchemas}
+                dataSourceGroups={dataSourceGroups}
+                databasesByProfile={databasesByProfile}
+                profiles={profiles}
+                tabs={tabs}
+                onActivateTab={setActiveTabId}
+                onAddDesignRow={addDesignRow}
+                onAddDataRow={addDataRow}
+                onApplyDataFilter={(tab) =>
+                  void refreshDataTab(
+                    tab.id,
+                    tab.profile_id,
+                    tab.database_name,
+                    tab.table_name,
+                    tab.data.where_clause,
+                    tab.data.order_by_clause,
+                    0,
+                    tab.data.limit,
+                  )
+                }
+                onChangeConsolePage={(tab, direction) => void changeConsolePage(tab, direction)}
+                onChangeDataPage={(tab, direction) => void changeDataPage(tab, direction)}
+                onClearGroupAssignmentSelection={clearGroupAssignmentSelection}
+                onCloseTab={removeTab}
+                onCommitDataChanges={(tab) => void commitDataChanges(tab)}
+                onCommitDesignChanges={(tab) => void commitDesignChanges(tab)}
+                onCreateProfileGroupFromTab={createProfileGroupFromTab}
+                onDeleteProfileFromTab={deleteProfileFromTab}
+                onDeleteProfileGroupFromTab={deleteProfileGroupFromTab}
+                onDeleteSelectedDataRows={deleteSelectedDataRows}
+                onDeleteSelectedDesignRows={deleteSelectedDesignRows}
+                onFormatConsoleSql={formatConsoleSql}
+                onImportNavicat={() => void importNavicatProfiles()}
+                onOpenDataExportDialog={openDataExportDialog}
+                onOpenQueryResultExportDialog={openQueryResultExportDialog}
+                onPatchConsoleDatabase={updateConsoleDatabase}
+                onPatchConsoleSql={updateConsoleSql}
+                onPatchDesignDraftTableName={updateDesignDraftTableName}
+                onPatchDesignRow={updateDesignRow}
+                onPatchProfileEditingGroupName={updateProfileEditingGroupName}
+                onPatchProfileField={updateProfileTabField}
+                onPatchProfileGroupCreateName={updateProfileGroupCreateName}
+                onPreviewDesignSql={(tab) => void previewDesignSql(tab)}
+                onRefreshDataTab={(...args) => void refreshDataTab(...args)}
+                onRefreshDesignTab={(...args) => void refreshDesignTab(...args)}
+                onRenameProfileGroupFromTab={renameProfileGroupFromTab}
+                onResolveConsoleSchema={(profileId, databaseName) =>
+                  ensureSqlAutocompleteLoaded(profileId, databaseName, {
+                    silent: true,
+                  })
+                }
+                onRestoreSelectedDataRows={restoreSelectedDataRows}
+                onRestoreSelectedDesignRows={restoreSelectedDesignRows}
+                onRunConsoleSql={(tab, offset) => void runConsoleSql(tab, offset)}
+                onSaveProfileTab={saveProfileTab}
+                onSelectAllGroupAssignmentProfiles={selectAllGroupAssignmentProfiles}
+                onSelectConsoleRowsRange={selectConsoleRowsRange}
+                onSelectDataRowsRange={selectDataRowsRange}
+                onStartRenameProfileGroup={startRenameProfileGroup}
+                onSubmitProfilesToGroup={applyProfilesToGroup}
+                onTestProfileTab={testProfileTab}
+                onCancelRenameProfileGroup={cancelRenameProfileGroup}
+                onToggleAllDesignRows={toggleAllDesignRows}
+                onToggleDesignRowSelection={toggleDesignRowSelection}
+                onToggleGroupAssignmentProfile={toggleGroupAssignmentProfile}
+                onToggleProfileGroupManager={toggleProfileGroupManager}
+                onUpdateDataQueryField={updateDataQueryField}
+                onUpdateDataRow={updateDataRow}
+                onUpdateGroupAssignmentFilter={updateGroupAssignmentFilter}
+              />
             ) : activeSection === 'data_compare' ? (
               <Suspense
                 fallback={
@@ -5215,1974 +4545,57 @@ function App() {
         </div>
         )}
       </section>
-
-      {pluginManagerVisible ? (
-        <PluginManagerModal
-          currentPlatform={currentPlatform}
-          installedPlugins={installedPlugins}
-          packageExtension={pluginPackageExtension}
-          selectedWorkspaceId={activeWorkspaceId}
-          busy={pluginManagerBusy}
-          uninstallingPluginId={uninstallingPluginId}
-          onClose={() => setPluginManagerVisible(false)}
-          onInstall={handleInstallPlugin}
-          onOpenPlugin={(pluginId) => {
-            setActiveWorkspaceId(`plugin:${pluginId}`)
-            setPluginManagerVisible(false)
-          }}
-          onUninstallPlugin={handleUninstallPlugin}
-        />
-      ) : null}
-
-      {ddlDialog ? (
-        <Modal
-          title={ddlDialog.title}
-          subtitle="当前表的 CREATE TABLE 语句"
-          onClose={() => setDdlDialog(null)}
-          actions={
-            <button className="flat-button primary" type="button" onClick={() => setDdlDialog(null)}>
-              关闭
-            </button>
-          }
-        >
-          <pre className="code-block">{ddlDialog.ddl}</pre>
-        </Modal>
-      ) : null}
-
-      {sqlPreview ? (
-        <Modal
-          title={sqlPreview.title}
-          subtitle="提交前请确认待执行 SQL"
-          onClose={() => {
-            if (!sqlPreview.busy) {
-              setSqlPreview(null)
-            }
-          }}
-          actions={
-            <>
-              <button
-                className="flat-button"
-                disabled={sqlPreview.busy}
-                type="button"
-                onClick={() => setSqlPreview(null)}
-              >
-                取消
-              </button>
-              {sqlPreview.confirm_label && sqlPreview.on_confirm ? (
-                <button
-                  className="flat-button primary"
-                  disabled={sqlPreview.busy}
-                  type="button"
-                  onClick={() => void sqlPreview.on_confirm?.()}
-                >
-                  {sqlPreview.busy ? '处理中...' : sqlPreview.confirm_label}
-                </button>
-              ) : null}
-            </>
-          }
-        >
-          <pre className="code-block">{sqlPreview.statements.join('\n\n')}</pre>
-        </Modal>
-      ) : null}
-
-      {exportDialog ? (
-        <Modal
-          title={exportDialog.title}
-          subtitle={exportDialog.subtitle}
-          onClose={() => {
-            if (!exportDialog.busy) {
-              setExportDialog(null)
-            }
-          }}
-          actions={
-            <>
-              <button
-                className="flat-button"
-                disabled={exportDialog.busy}
-                type="button"
-                onClick={() => setExportDialog(null)}
-              >
-                取消
-              </button>
-              {exportDialog.format === 'sql' ? (
-                <button
-                  className="flat-button"
-                  disabled={exportDialog.busy}
-                  type="button"
-                  onClick={() => void copyExportDialogSql()}
-                >
-                  {exportDialog.busy ? '处理中...' : '复制到剪贴板'}
-                </button>
-              ) : null}
-              <button
-                className="flat-button primary"
-                disabled={exportDialog.busy}
-                type="button"
-                onClick={() => void confirmExportDialog()}
-              >
-                {exportDialog.busy ? '处理中...' : '下载文件'}
-              </button>
-            </>
-          }
-        >
-          <div className="form-card compact-form-card export-dialog-card">
-            <label className="form-item">
-              <span>导出格式</span>
-              <select
-                value={exportDialog.format}
-                disabled={exportDialog.busy}
-                onChange={(event) =>
-                  updateExportDialogFormat(event.target.value as ExportFileFormat)
-                }
-              >
-                <option value="csv">CSV</option>
-                <option value="sql">SQL</option>
-                {exportDialog.kind === 'query_result' ? (
-                  <option value="json">JSON</option>
-                ) : null}
-              </select>
-            </label>
-
-            <div className="form-item">
-              <span>导出范围</span>
-              <div className="export-scope-list">
-                {getExportScopeOptions(exportDialog).map((option) => (
-                  <label
-                    className={`export-scope-item ${option.disabled ? 'disabled' : ''}`}
-                    key={option.value}
-                  >
-                    <input
-                      checked={exportDialog.scope === option.value}
-                      disabled={exportDialog.busy || option.disabled}
-                      name="export_scope"
-                      type="radio"
-                      value={option.value}
-                      onChange={() => updateExportDialogScope(option.value)}
-                    />
-                    <div className="export-scope-copy">
-                      <strong>{option.label}</strong>
-                      <p>{option.description}</p>
-                    </div>
-                  </label>
-                ))}
-              </div>
-            </div>
-
-            <div className="status-panel export-summary">
-              当前将以 {exportDialog.format.toUpperCase()} 格式导出
-              {getExportScopeText(exportDialog)}。
-              {exportDialog.format === 'sql'
-                ? ' 可直接下载文件，也可复制到剪贴板。'
-                : null}
-            </div>
-          </div>
-        </Modal>
-      ) : null}
-
-      {createDatabaseDialog ? (
-        <Modal
-          title="新增数据库"
-          subtitle={`当前数据源：${createDatabaseDialog.data_source_name}`}
-          onClose={() => {
-            if (!createDatabaseDialog.busy) {
-              setCreateDatabaseDialog(null)
-            }
-          }}
-          actions={
-            <>
-              <button
-                className="flat-button"
-                disabled={createDatabaseDialog.busy}
-                type="button"
-                onClick={() => setCreateDatabaseDialog(null)}
-              >
-                取消
-              </button>
-              <button
-                className="flat-button primary"
-                disabled={createDatabaseDialog.busy}
-                type="button"
-                onClick={() => void saveCreateDatabaseDialog()}
-              >
-                {createDatabaseDialog.busy ? '创建中...' : '确认创建'}
-              </button>
-            </>
-          }
-        >
-          <div className="form-card compact-form-card">
-            <label className="form-item">
-              <span>数据库名</span>
-              <input
-                autoFocus
-                value={createDatabaseDialog.form.database_name}
-                onChange={(event) => updateCreateDatabaseField(event.target.value)}
-                placeholder="请输入数据库名"
-              />
-            </label>
-          </div>
-        </Modal>
-      ) : null}
-
-      {confirmDialog ? (
-        <Modal
-          title={confirmDialog.title}
-          subtitle={confirmDialog.body}
-          onClose={() => {
-            if (!confirmDialog.busy) {
-              setConfirmDialog(null)
-            }
-          }}
-          actions={
-            <>
-              <button
-                className="flat-button"
-                disabled={confirmDialog.busy}
-                type="button"
-                onClick={() => setConfirmDialog(null)}
-              >
-                取消
-              </button>
-              <button
-                className="flat-button primary"
-                disabled={confirmDialog.busy}
-                type="button"
-                onClick={() => void confirmDialog.on_confirm()}
-              >
-                {confirmDialog.busy ? '处理中...' : confirmDialog.confirm_label}
-              </button>
-            </>
-          }
-        >
-          <div className="status-panel">{confirmDialog.body}</div>
-        </Modal>
-      ) : null}
-
-      {treeContextMenu ? (
-        <div
-          className="context-menu"
-          role="menu"
-          style={{ left: treeContextMenu.x, top: treeContextMenu.y }}
-          onClick={(event) => event.stopPropagation()}
-        >
-          {treeContextMenu.kind === 'group' ? (
-            <button
-              className="context-menu-item"
-              type="button"
-              onClick={() => {
-                const targetGroup = dataSourceGroups.find(
-                  (group) => group.id === treeContextMenu.group_id,
-                )
-                if (targetGroup) {
-                  openGroupAssignmentTab(targetGroup)
-                } else {
-                  pushToast('目标分组不存在', 'error')
-                }
-                setTreeContextMenu(null)
-              }}
-            >
-              添加数据源到分组
-            </button>
-          ) : null}
-
-          {treeContextMenu.kind === 'profile' ? (
-            <button
-              className="context-menu-item"
-              type="button"
-              onClick={() => {
-                openCreateDatabaseDialog(treeContextMenu.profile_id)
-                setTreeContextMenu(null)
-              }}
-            >
-              新增数据库
-            </button>
-          ) : null}
-
-          {treeContextMenu.kind === 'database' ? (
-            <button
-              className="context-menu-item"
-              type="button"
-              onClick={() => {
-                openCreateTableTab(
-                  treeContextMenu.profile_id,
-                  treeContextMenu.database_name,
-                )
-                setTreeContextMenu(null)
-              }}
-            >
-              新增表
-            </button>
-          ) : null}
-
-          {treeContextMenu.kind === 'table' ? (
-            <>
-              <button
-                className="context-menu-item"
-                type="button"
-                onClick={() => {
-                  void openTableTab(
-                    'data',
-                    treeContextMenu.profile_id,
-                    treeContextMenu.database_name,
-                    treeContextMenu.table_name,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                修改表数据
-              </button>
-              <button
-                className="context-menu-item"
-                type="button"
-                onClick={() => {
-                  void openTableTab(
-                    'design',
-                    treeContextMenu.profile_id,
-                    treeContextMenu.database_name,
-                    treeContextMenu.table_name,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                修改表结构
-              </button>
-              <button
-                className="context-menu-item"
-                type="button"
-                onClick={() => {
-                  void openTableDdl(
-                    treeContextMenu.profile_id,
-                    treeContextMenu.database_name,
-                    treeContextMenu.table_name,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                查看 DDL
-              </button>
-              <button
-                className="context-menu-item"
-                type="button"
-                onClick={() => {
-                  confirmUnimplementedAction(
-                    '复制表',
-                    `确认复制表 ${treeContextMenu.database_name}.${treeContextMenu.table_name} 吗？`,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                复制表
-              </button>
-              <button
-                className="context-menu-item"
-                type="button"
-                onClick={() => {
-                  openTableExportDialog(
-                    treeContextMenu.profile_id,
-                    treeContextMenu.database_name,
-                    treeContextMenu.table_name,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                导出表
-              </button>
-              <button
-                className="context-menu-item danger"
-                type="button"
-                onClick={() => {
-                  confirmUnimplementedAction(
-                    '删除表',
-                    `确认删除表 ${treeContextMenu.database_name}.${treeContextMenu.table_name} 吗？`,
-                  )
-                  setTreeContextMenu(null)
-                }}
-              >
-                删除表
-              </button>
-            </>
-          ) : null}
-        </div>
-      ) : null}
-
-      <div className="toast-stack">
-        {toasts.map((toast) => (
-          <div className={`toast toast-${toast.tone}`} key={toast.id}>
-            {toast.message}
-          </div>
-        ))}
-      </div>
+      <AppOverlays
+        activeWorkspaceId={activeWorkspaceId}
+        confirmDialog={confirmDialog}
+        createDatabaseDialog={createDatabaseDialog}
+        currentPlatform={currentPlatform}
+        dataSourceGroups={dataSourceGroups}
+        ddlDialog={ddlDialog}
+        exportDialog={exportDialog}
+        installedPlugins={installedPlugins}
+        packageExtension={pluginPackageExtension}
+        pluginManagerBusy={pluginManagerBusy}
+        pluginManagerVisible={pluginManagerVisible}
+        sqlPreview={sqlPreview}
+        toasts={toasts}
+        treeContextMenu={treeContextMenu}
+        uninstallingPluginId={uninstallingPluginId}
+        onCloseConfirmDialog={() => setConfirmDialog(null)}
+        onCloseCreateDatabaseDialog={() => setCreateDatabaseDialog(null)}
+        onCloseDdlDialog={() => setDdlDialog(null)}
+        onCloseExportDialog={() => setExportDialog(null)}
+        onClosePluginManager={() => setPluginManagerVisible(false)}
+        onCloseSqlPreview={() => setSqlPreview(null)}
+        onCloseTreeContextMenu={() => setTreeContextMenu(null)}
+        onConfirmExportDialog={() => void confirmExportDialog()}
+        onConfirmSqlPreview={() => void sqlPreview?.on_confirm?.()}
+        onConfirmUnimplementedAction={confirmUnimplementedAction}
+        onCopyExportDialogSql={() => void copyExportDialogSql()}
+        onInstallPlugin={handleInstallPlugin}
+        onOpenCreateDatabaseDialog={openCreateDatabaseDialog}
+        onOpenCreateTableTab={openCreateTableTab}
+        onOpenGroupAssignmentTab={openGroupAssignmentTab}
+        onOpenPluginWorkspace={(pluginId) => setActiveWorkspaceId(`plugin:${pluginId}`)}
+        onOpenTableData={(profileId, databaseName, tableName) => {
+          void openTableTab('data', profileId, databaseName, tableName)
+        }}
+        onOpenTableDesign={(profileId, databaseName, tableName) => {
+          void openTableTab('design', profileId, databaseName, tableName)
+        }}
+        onOpenTableDdl={(profileId, databaseName, tableName) => {
+          void openTableDdl(profileId, databaseName, tableName)
+        }}
+        onOpenTableExportDialog={openTableExportDialog}
+        onUninstallPlugin={handleUninstallPlugin}
+        onUpdateCreateDatabaseField={updateCreateDatabaseField}
+        onUpdateExportDialogFormat={updateExportDialogFormat}
+        onUpdateExportDialogScope={updateExportDialogScope}
+        onSaveCreateDatabaseDialog={() => void saveCreateDatabaseDialog()}
+        onShowToast={pushToast}
+      />
     </main>
   )
-}
-
-function GroupAssignmentView({
-  tab,
-  profiles,
-  dataSourceGroups,
-  onFilterChange,
-  onToggleProfile,
-  onSelectAll,
-  onClearSelection,
-  onApply,
-}: {
-  tab: GroupAssignmentTab
-  profiles: ConnectionProfile[]
-  dataSourceGroups: DataSourceGroup[]
-  onFilterChange: (tabId: string, value: string) => void
-  onToggleProfile: (tabId: string, profileId: string, checked: boolean) => void
-  onSelectAll: (tabId: string, profileIds: string[]) => void
-  onClearSelection: (tabId: string) => void
-  onApply: (tab: GroupAssignmentTab) => Promise<void>
-}) {
-  const targetGroup =
-    dataSourceGroups.find((group) => group.id === tab.assignment.target_group_id) ?? null
-  const selectedProfileIdSet = new Set(tab.assignment.selected_profile_ids)
-  const validSelectedCount = profiles.filter((profile) =>
-    selectedProfileIdSet.has(profile.id),
-  ).length
-  const filterText = tab.assignment.filter_text.trim().toLowerCase()
-  const filteredProfiles = profiles.filter((profile) => {
-    if (!filterText) {
-      return true
-    }
-
-    const currentGroupName = normalizeGroupName(profile.group_name)
-    return [
-      profile.data_source_name,
-      profile.host,
-      `${profile.host}:${profile.port}`,
-      currentGroupName,
-    ].some((value) => value.toLowerCase().includes(filterText))
-  })
-  const filteredProfileIds = filteredProfiles.map((profile) => profile.id)
-  const allFilteredSelected =
-    filteredProfiles.length > 0 &&
-    filteredProfiles.every((profile) => selectedProfileIdSet.has(profile.id))
-
-  return (
-    <div className="editor-page group-assignment-page">
-      <div className="editor-header">
-        <div>
-          <strong>{targetGroup ? `添加数据源到 ${targetGroup.group_name} 分组` : '分组归类'}</strong>
-          <p>
-            右侧展示全部数据源和当前所属分组。勾选后可一次性加入当前目标分组。
-          </p>
-        </div>
-
-        <div className="editor-actions">
-          <button
-            className="flat-button"
-            disabled={filteredProfiles.length === 0 || allFilteredSelected || tab.assignment.submitting}
-            type="button"
-            onClick={() => onSelectAll(tab.id, filteredProfileIds)}
-          >
-            全选当前列表
-          </button>
-          <button
-            className="flat-button"
-            disabled={validSelectedCount === 0 || tab.assignment.submitting}
-            type="button"
-            onClick={() => onClearSelection(tab.id)}
-          >
-            清空选择
-          </button>
-        </div>
-      </div>
-
-      <div className="form-card">
-        <div className="group-assignment-toolbar">
-          <label className="form-item">
-            <span>筛选数据源</span>
-            <input
-              value={tab.assignment.filter_text}
-              onChange={(event) => onFilterChange(tab.id, event.target.value)}
-              placeholder="按数据源名称、主机或当前分组筛选"
-            />
-          </label>
-
-          <div className="group-assignment-summary">
-            <span>目标分组</span>
-            <strong>{targetGroup?.group_name ?? '分组不存在'}</strong>
-            <small>当前共 {profiles.length} 个数据源，已选择 {validSelectedCount} 个</small>
-          </div>
-        </div>
-      </div>
-
-      {tab.error ? <div className="status-panel warning">{tab.error}</div> : null}
-
-      <div className="form-card group-assignment-card">
-        <div className="group-assignment-list">
-          {filteredProfiles.length === 0 ? (
-            <div className="group-manager-empty">暂无匹配的数据源。</div>
-          ) : (
-            filteredProfiles.map((profile) => {
-              const checked = selectedProfileIdSet.has(profile.id)
-
-              return (
-                <label
-                  className={`group-assignment-row ${checked ? 'selected' : ''}`}
-                  key={profile.id}
-                >
-                  <input
-                    checked={checked}
-                    disabled={tab.assignment.submitting}
-                    type="checkbox"
-                    onChange={(event) =>
-                      onToggleProfile(tab.id, profile.id, event.target.checked)
-                    }
-                  />
-
-                  <div className="group-assignment-main">
-                    <strong>{profile.data_source_name}</strong>
-                    <span>
-                      {profile.host}:{profile.port}
-                    </span>
-                  </div>
-
-                  <div className="group-assignment-meta">
-                    <span>当前分组</span>
-                    <strong>{normalizeGroupName(profile.group_name)}</strong>
-                  </div>
-                </label>
-              )
-            })
-          )}
-        </div>
-
-        <div className="group-assignment-footer">
-          <span>勾选后会覆盖所选数据源原有的分组归属。</span>
-          <button
-            className="flat-button primary"
-            disabled={!targetGroup || validSelectedCount === 0 || tab.assignment.submitting}
-            type="button"
-            onClick={() => void onApply(tab)}
-          >
-            {tab.assignment.submitting
-              ? '处理中...'
-              : `添加 ${validSelectedCount} 个数据源到 ${targetGroup?.group_name ?? ''} 分组`}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
-}
-
-function ProfileEditorView({
-  tab,
-  dataSourceGroups,
-  onFieldChange,
-  onToggleGroupManager,
-  onCreateGroupNameChange,
-  onCreateGroup,
-  onStartRenameGroup,
-  onCancelRenameGroup,
-  onEditingGroupNameChange,
-  onRenameGroup,
-  onDeleteGroup,
-  onImportNavicat,
-  onSave,
-  onTest,
-  onDelete,
-}: {
-  tab: ProfileTab
-  dataSourceGroups: DataSourceGroup[]
-  onFieldChange: (
-    tabId: string,
-    field: keyof SaveConnectionProfilePayload,
-    value: string | number | null,
-  ) => void
-  onToggleGroupManager: (tabId: string) => void
-  onCreateGroupNameChange: (tabId: string, value: string) => void
-  onCreateGroup: (tab: ProfileTab) => Promise<void>
-  onStartRenameGroup: (tabId: string, group: DataSourceGroup) => void
-  onCancelRenameGroup: (tabId: string) => void
-  onEditingGroupNameChange: (tabId: string, value: string) => void
-  onRenameGroup: (tab: ProfileTab) => Promise<void>
-  onDeleteGroup: (tab: ProfileTab, group: DataSourceGroup) => Promise<void>
-  onImportNavicat: () => void
-  onSave: (tab: ProfileTab) => Promise<void>
-  onTest: (tab: ProfileTab) => Promise<void>
-  onDelete: (tab: ProfileTab) => Promise<void>
-}) {
-  return (
-    <div className="editor-page">
-      <div className="editor-header">
-        <div>
-          <strong>{tab.editor.mode === 'create' ? '新增数据源' : '编辑数据源'}</strong>
-          <p>
-            在这里直接选择分组或维护分组目录。整个结构为：分组 - 数据源 -
-            数据库 - 表。
-          </p>
-        </div>
-
-        <div className="editor-actions">
-          {tab.editor.mode === 'create' ? (
-            <button className="flat-button" type="button" onClick={onImportNavicat}>
-              导入 Navicat
-            </button>
-          ) : null}
-          {tab.editor.mode === 'edit' ? (
-            <button className="flat-button danger" type="button" onClick={() => void onDelete(tab)}>
-              删除
-            </button>
-          ) : null}
-          <button
-            className="flat-button"
-            disabled={tab.editor.testing || tab.editor.saving}
-            type="button"
-            onClick={() => void onTest(tab)}
-          >
-            {tab.editor.testing ? '测试中...' : '测试连接'}
-          </button>
-          <button
-            className="flat-button primary"
-            disabled={tab.editor.testing || tab.editor.saving}
-            type="button"
-            onClick={() => void onSave(tab)}
-          >
-            {tab.editor.saving ? '保存中...' : '保存'}
-          </button>
-        </div>
-      </div>
-
-      <div className="form-card">
-        <div className="form-grid">
-          <div className="form-item form-item-span-2">
-            <span>所属分组</span>
-            <div className="group-select-row">
-              <select
-                value={tab.editor.form.group_name ?? ''}
-                onChange={(event) =>
-                  onFieldChange(tab.id, 'group_name', event.target.value || null)
-                }
-              >
-                <option value="">未分组</option>
-                {dataSourceGroups.map((group) => (
-                  <option key={group.id} value={group.group_name}>
-                    {group.group_name}
-                  </option>
-                ))}
-              </select>
-              <button
-                className="flat-button"
-                disabled={tab.editor.group_busy}
-                type="button"
-                onClick={() => onToggleGroupManager(tab.id)}
-              >
-                {tab.editor.group_manager_open ? '收起分组维护' : '维护分组'}
-              </button>
-            </div>
-            <small className="form-hint">
-              新增数据源时可直接下拉选组；没有合适分组时，在这里新增即可。
-            </small>
-          </div>
-
-          <label className="form-item">
-            <span>数据源名称</span>
-            <input
-              value={tab.editor.form.data_source_name}
-              onChange={(event) =>
-                onFieldChange(tab.id, 'data_source_name', event.target.value)
-              }
-              placeholder="例如：采购生产库"
-            />
-          </label>
-
-          <label className="form-item">
-            <span>主机</span>
-            <input
-              value={tab.editor.form.host}
-              onChange={(event) => onFieldChange(tab.id, 'host', event.target.value)}
-              placeholder="例如：10.20.8.12"
-            />
-          </label>
-
-          <label className="form-item">
-            <span>端口</span>
-            <input
-              inputMode="numeric"
-              value={tab.editor.form.port}
-              onChange={(event) =>
-                onFieldChange(
-                  tab.id,
-                  'port',
-                  Number.parseInt(event.target.value || '3306', 10),
-                )
-              }
-              placeholder="3306"
-            />
-          </label>
-
-          <label className="form-item">
-            <span>用户名</span>
-            <input
-              value={tab.editor.form.username}
-              onChange={(event) => onFieldChange(tab.id, 'username', event.target.value)}
-              placeholder="root"
-            />
-          </label>
-
-          <label className="form-item">
-            <span>密码</span>
-            <input
-              type="password"
-              value={tab.editor.form.password}
-              onChange={(event) => onFieldChange(tab.id, 'password', event.target.value)}
-              placeholder={
-                tab.editor.mode === 'edit' ? '留空表示保持当前密码' : '请输入密码'
-              }
-            />
-            <small className="form-hint">
-              {tab.editor.mode === 'edit'
-                ? '编辑已有数据源时，留空会继续使用本地已保存密码；只有输入新值时才会更新。'
-                : '首次保存时必须输入密码。'}
-            </small>
-          </label>
-        </div>
-
-        {tab.editor.group_manager_open ? (
-          <div className="group-manager-card">
-            <div className="group-manager-header">
-              <div>
-                <strong>分组维护</strong>
-                <p>删除分组后，已有数据源会自动回到“未分组”。</p>
-              </div>
-            </div>
-
-            <div className="group-manager-create">
-              <input
-                value={tab.editor.create_group_name}
-                onChange={(event) => onCreateGroupNameChange(tab.id, event.target.value)}
-                placeholder="输入新的分组名称"
-              />
-              <button
-                className="flat-button primary"
-                disabled={tab.editor.group_busy}
-                type="button"
-                onClick={() => void onCreateGroup(tab)}
-              >
-                {tab.editor.group_busy ? '处理中...' : '新增分组'}
-              </button>
-            </div>
-
-            <div className="group-manager-list">
-              {dataSourceGroups.length === 0 ? (
-                <div className="group-manager-empty">
-                  暂无分组，新增后即可在上方下拉框中选择。
-                </div>
-              ) : (
-                dataSourceGroups.map((group) => {
-                  const editing = tab.editor.editing_group_id === group.id
-                  return (
-                    <div className="group-manager-row" key={group.id}>
-                      {editing ? (
-                        <>
-                          <input
-                            value={tab.editor.editing_group_name}
-                            onChange={(event) =>
-                              onEditingGroupNameChange(tab.id, event.target.value)
-                            }
-                            placeholder="请输入分组名称"
-                          />
-                          <button
-                            className="flat-button primary"
-                            disabled={tab.editor.group_busy}
-                            type="button"
-                            onClick={() => void onRenameGroup(tab)}
-                          >
-                            保存
-                          </button>
-                          <button
-                            className="flat-button"
-                            disabled={tab.editor.group_busy}
-                            type="button"
-                            onClick={() => onCancelRenameGroup(tab.id)}
-                          >
-                            取消
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <div className="group-manager-name">{group.group_name}</div>
-                          <div className="group-manager-actions">
-                            <button
-                              className="flat-button"
-                              disabled={tab.editor.group_busy}
-                              type="button"
-                              onClick={() => onStartRenameGroup(tab.id, group)}
-                            >
-                              重命名
-                            </button>
-                            <button
-                              className="flat-button danger"
-                              disabled={tab.editor.group_busy}
-                              type="button"
-                              onClick={() => void onDeleteGroup(tab, group)}
-                            >
-                              删除
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )
-                })
-              )}
-            </div>
-          </div>
-        ) : null}
-
-        {tab.editor.test_result ? (
-          <div className="status-panel">{tab.editor.test_result}</div>
-        ) : null}
-      </div>
-    </div>
-  )
-}
-
-function DesignEditorView({
-  tab,
-  onRefresh,
-  onAddColumn,
-  onDeleteColumns,
-  onRestoreColumns,
-  onPreview,
-  onCommit,
-  onToggleAll,
-  onToggleOne,
-  onTableNameChange,
-  onChange,
-}: {
-  tab: DesignTab
-  onRefresh: () => void
-  onAddColumn: () => void
-  onDeleteColumns: () => void
-  onRestoreColumns: () => void
-  onPreview: () => void
-  onCommit: () => void
-  onToggleAll: (checked: boolean) => void
-  onToggleOne: (clientId: string, checked: boolean) => void
-  onTableNameChange: (tabId: string, value: string) => void
-  onChange: (
-    tabId: string,
-    clientId: string,
-    field: keyof TableColumn,
-    value: string | boolean | number | null,
-  ) => void
-}) {
-  return (
-    <div className="editor-page">
-      <div className="editor-header">
-        <div>
-          <strong>{tab.title}</strong>
-          <p>
-            {tab.design.mode === 'create'
-              ? '新建表会按当前字段定义生成 CREATE TABLE 语句。'
-              : '表结构编辑页。仅覆盖原型中的字段定义维度，不扩展索引与外键面板。'}
-          </p>
-        </div>
-
-        <div className="editor-actions">
-          {tab.design.mode === 'edit' ? (
-            <button className="flat-button" type="button" onClick={onRefresh}>
-              刷新
-            </button>
-          ) : null}
-          <button className="flat-button" type="button" onClick={onAddColumn}>
-            新增字段
-          </button>
-          <button className="flat-button" type="button" onClick={onDeleteColumns}>
-            删除字段
-          </button>
-          <button className="flat-button" type="button" onClick={onRestoreColumns}>
-            恢复所选
-          </button>
-          <button className="flat-button" type="button" onClick={onPreview}>
-            预览 SQL
-          </button>
-          <button className="flat-button primary" type="button" onClick={onCommit}>
-            {tab.design.mode === 'create' ? '创建表' : '提交'}
-          </button>
-        </div>
-      </div>
-
-      {tab.design.mode === 'create' ? (
-        <div className="form-card compact-form-card">
-          <label className="form-item">
-            <span>表名</span>
-            <input
-              value={tab.design.draft_table_name}
-              onChange={(event) => onTableNameChange(tab.id, event.target.value)}
-              placeholder="请输入新表名称"
-            />
-          </label>
-        </div>
-      ) : null}
-
-      {tab.design.error ? (
-        <EmptyNotice title="读取表结构失败" text={tab.design.error} />
-      ) : null}
-
-      <div className="grid-shell">
-        <div className="grid-head structure-grid">
-          <label className="grid-cell center-cell">
-            <input
-              type="checkbox"
-              checked={
-                tab.design.draft_columns.length > 0 &&
-                tab.design.draft_columns.every((column) => column.selected)
-              }
-              onChange={(event) => onToggleAll(event.target.checked)}
-            />
-          </label>
-          <div className="grid-cell">字段名</div>
-          <div className="grid-cell">类型</div>
-          <div className="grid-cell">长度</div>
-          <div className="grid-cell">小数位</div>
-          <div className="grid-cell center-cell">允许空</div>
-          <div className="grid-cell center-cell">主键</div>
-          <div className="grid-cell center-cell">自增</div>
-          <div className="grid-cell">默认值</div>
-          <div className="grid-cell">注释</div>
-        </div>
-
-        <div className="grid-body">
-          {tab.design.draft_columns.map((column) => (
-            <div className="grid-row structure-grid" key={column.client_id}>
-              <label className="grid-cell center-cell">
-                <input
-                  type="checkbox"
-                  checked={column.selected}
-                  onChange={(event) =>
-                    onToggleOne(column.client_id, event.target.checked)
-                  }
-                />
-              </label>
-
-              <div className="grid-cell">
-                <input
-                  className="cell-input"
-                  value={column.name}
-                  onChange={(event) =>
-                    onChange(tab.id, column.client_id, 'name', event.target.value)
-                  }
-                />
-              </div>
-
-              <div className="grid-cell">
-                <select
-                  className="cell-input"
-                  value={column.data_type}
-                  onChange={(event) =>
-                    onChange(tab.id, column.client_id, 'data_type', event.target.value)
-                  }
-                >
-                  {commonDataTypes.map((dataType) => (
-                    <option key={dataType} value={dataType}>
-                      {dataType}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid-cell">
-                <input
-                  className="cell-input"
-                  inputMode="numeric"
-                  value={column.length ?? ''}
-                  onChange={(event) =>
-                    onChange(
-                      tab.id,
-                      column.client_id,
-                      'length',
-                      parseOptionalNumber(event.target.value),
-                    )
-                  }
-                />
-              </div>
-
-              <div className="grid-cell">
-                <input
-                  className="cell-input"
-                  inputMode="numeric"
-                  value={column.scale ?? ''}
-                  onChange={(event) =>
-                    onChange(
-                      tab.id,
-                      column.client_id,
-                      'scale',
-                      parseOptionalNumber(event.target.value),
-                    )
-                  }
-                />
-              </div>
-
-              <label className="grid-cell center-cell">
-                <input
-                  type="checkbox"
-                  checked={column.nullable}
-                  onChange={(event) =>
-                    onChange(tab.id, column.client_id, 'nullable', event.target.checked)
-                  }
-                />
-              </label>
-
-              <label className="grid-cell center-cell">
-                <input
-                  type="checkbox"
-                  checked={column.primary_key}
-                  onChange={(event) =>
-                    onChange(tab.id, column.client_id, 'primary_key', event.target.checked)
-                  }
-                />
-              </label>
-
-              <label className="grid-cell center-cell">
-                <input
-                  type="checkbox"
-                  checked={column.auto_increment}
-                  onChange={(event) =>
-                    onChange(
-                      tab.id,
-                      column.client_id,
-                      'auto_increment',
-                      event.target.checked,
-                    )
-                  }
-                />
-              </label>
-
-              <div className="grid-cell">
-                <input
-                  className="cell-input"
-                  value={column.default_value ?? ''}
-                  onChange={(event) =>
-                    onChange(
-                      tab.id,
-                      column.client_id,
-                      'default_value',
-                      event.target.value || null,
-                    )
-                  }
-                />
-              </div>
-
-              <div className="grid-cell">
-                <input
-                  className="cell-input"
-                  value={column.comment}
-                  onChange={(event) =>
-                    onChange(tab.id, column.client_id, 'comment', event.target.value)
-                  }
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-
-      <footer className="page-footer">
-        <span>{tab.design.draft_columns.length} 个字段</span>
-      </footer>
-    </div>
-  )
-}
-
-function OutputDock({
-  logs,
-  outputBodyRef,
-  onClear,
-}: {
-  logs: OutputLogEntry[]
-  outputBodyRef: RefObject<HTMLDivElement | null>
-  onClear: () => void
-}) {
-  return (
-    <div className="output-dock">
-      <div className="output-dock-header">
-        <div className="output-dock-title">
-          <strong>输出</strong>
-          <span>{logs.length} 条记录</span>
-        </div>
-        <div className="editor-actions">
-          <button className="flat-button" type="button" onClick={onClear}>
-            清空
-          </button>
-        </div>
-      </div>
-
-      <div className="output-dock-body" ref={outputBodyRef}>
-        {logs.length === 0 ? (
-          <div className="output-empty">执行 SQL 或打开数据表后，这里会持续记录对应的 SQL 操作。</div>
-        ) : (
-          logs.map((log) => (
-            <div className={`output-entry output-${log.tone}`} key={log.id}>
-              <div className="output-entry-meta">
-                <span>[{log.timestamp}]</span>
-                <span>{log.scope}&gt;</span>
-                <span>{log.message}</span>
-              </div>
-              {log.sql ? <pre className="output-entry-sql">{log.sql}</pre> : null}
-            </div>
-          ))
-        )}
-      </div>
-    </div>
-  )
-}
-
-function WorkspacePanelPlaceholder({
-  title,
-  description,
-  tone = 'default',
-}: {
-  title: string
-  description: string
-  tone?: 'default' | 'accent'
-}) {
-  return (
-    <div className={`workspace-panel-placeholder workspace-panel-placeholder-${tone}`}>
-      <div className="workspace-panel-placeholder-badge">Layout</div>
-      <strong>{title}</strong>
-      <p>{description}</p>
-    </div>
-  )
-}
-
-function EmptyWorkspace() {
-  return <div className="empty-workspace" />
-}
-
-function WorkspaceLoadingState({
-  title,
-  text,
-}: {
-  title: string
-  text: string
-}) {
-  return (
-    <div className="empty-workspace">
-      <strong>{title}</strong>
-      <p>{text}</p>
-    </div>
-  )
-}
-
-function SquareIconButton({
-  children,
-  disabled,
-  label,
-  onClick,
-}: {
-  children: ReactNode
-  disabled?: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      className="icon-button"
-      disabled={disabled}
-      title={label}
-      type="button"
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  )
-}
-
-function SquareActionButton({
-  active,
-  disabled,
-  label,
-  onClick,
-}: {
-  active?: boolean
-  disabled?: boolean
-  label: string
-  onClick: () => void
-}) {
-  return (
-    <button
-      className={`text-button ${active ? 'active' : ''}`}
-      disabled={disabled}
-      type="button"
-      onClick={onClick}
-    >
-      {label}
-    </button>
-  )
-}
-
-function Modal({
-  title,
-  subtitle,
-  children,
-  actions,
-  onClose,
-}: {
-  title: string
-  subtitle?: string
-  children: ReactNode
-  actions?: ReactNode
-  onClose: () => void
-}) {
-  return (
-    <div className="modal-backdrop" role="presentation">
-      <div className="modal-card" role="dialog" aria-modal="true">
-        <div className="modal-header">
-          <div>
-            <strong>{title}</strong>
-            {subtitle ? <p>{subtitle}</p> : null}
-          </div>
-          <button className="icon-button" type="button" onClick={onClose}>
-            ×
-          </button>
-        </div>
-
-        <div className="modal-body">{children}</div>
-        {actions ? <div className="modal-actions">{actions}</div> : null}
-      </div>
-    </div>
-  )
-}
-
-function CompareSidebar({
-  title,
-  subtitle,
-  children,
-}: {
-  title: string
-  subtitle: string
-  children: ReactNode
-}) {
-  return (
-    <div className="compare-sidebar">
-      <div className="pane-header compare-pane-header">
-        <div className="pane-title compare-pane-title">
-          <DatabaseGlyph />
-          <strong>{title}</strong>
-        </div>
-        <p className="compare-pane-subtitle">{subtitle}</p>
-      </div>
-      <div className="tree-pane compare-pane-body">{children}</div>
-    </div>
-  )
-}
-
-function DatabaseGlyph() {
-  return (
-    <span className="glyph-badge">
-      <svg viewBox="0 0 24 24" aria-hidden="true">
-        <ellipse cx="12" cy="6" rx="6.5" ry="2.8" />
-        <path d="M5.5 6v8c0 1.6 2.9 2.9 6.5 2.9s6.5-1.3 6.5-2.9V6" />
-        <path d="M5.5 10c0 1.6 2.9 2.9 6.5 2.9s6.5-1.3 6.5-2.9" />
-      </svg>
-    </span>
-  )
-}
-
-function DatabaseSettingsGlyph() {
-  return (
-    <svg className="settings-glyph" viewBox="0 0 24 24" aria-hidden="true">
-      <ellipse cx="11" cy="6" rx="6" ry="2.6" />
-      <path d="M5 6v7c0 1.5 2.7 2.8 6 2.8s6-1.3 6-2.8V6" />
-      <path d="M5 9.5c0 1.5 2.7 2.8 6 2.8 1 0 1.9-.1 2.7-.3" />
-      <path d="M18.7 15.1l.6.4.8-.4.8 1.4-.6.5v.8l.6.5-.8 1.4-.8-.4-.6.4-.2.9h-1.6l-.2-.9-.6-.4-.8.4-.8-1.4.6-.5v-.8l-.6-.5.8-1.4.8.4.6-.4.2-.9h1.6z" />
-      <circle cx="18" cy="17.5" r="1.2" />
-    </svg>
-  )
-}
-
-function TreeDatabaseGlyph() {
-  return (
-    <span className="tree-node-glyph tree-database-glyph" aria-hidden="true">
-      <svg viewBox="0 0 24 24">
-        <ellipse cx="12" cy="6" rx="6.5" ry="2.8" />
-        <path d="M5.5 6v8c0 1.6 2.9 2.9 6.5 2.9s6.5-1.3 6.5-2.9V6" />
-        <path d="M5.5 10c0 1.6 2.9 2.9 6.5 2.9s6.5-1.3 6.5-2.9" />
-      </svg>
-    </span>
-  )
-}
-
-function TreeTableGlyph() {
-  return (
-    <span className="tree-node-glyph tree-table-glyph" aria-hidden="true">
-      <svg viewBox="0 0 24 24">
-        <rect x="4.5" y="5" width="15" height="14" rx="1.8" />
-        <path d="M4.5 9.5h15" />
-        <path d="M9.5 5v14" />
-        <path d="M14.5 9.5v9.5" />
-      </svg>
-    </span>
-  )
-}
-
-function buildDataSourceTreeGroups(
-  groups: DataSourceGroup[],
-  profiles: ConnectionProfile[],
-): DataSourceTreeGroup[] {
-  const profilesByGroup = new Map<string, ConnectionProfile[]>()
-
-  profiles.forEach((profile) => {
-    const groupName = normalizeGroupName(profile.group_name)
-    if (!profilesByGroup.has(groupName)) {
-      profilesByGroup.set(groupName, [])
-    }
-    profilesByGroup.get(groupName)!.push(profile)
-  })
-
-  const treeGroups = sortDataSourceGroups(groups).map((group) => {
-    const groupName = normalizeGroupName(group.group_name)
-    const groupProfiles = profilesByGroup.get(groupName) ?? []
-    profilesByGroup.delete(groupName)
-
-    return {
-      key: `group:${groupName}`,
-      group_id: group.id,
-      group_name: group.group_name,
-      profiles: groupProfiles,
-    }
-  })
-
-  const leftoverGroups = Array.from(profilesByGroup.entries())
-    .sort(([left], [right]) => compareGroupName(left, right))
-    .map(([groupName, groupProfiles]) => ({
-      key: `group:${groupName}`,
-      group_id: null,
-      group_name: groupName,
-      profiles: groupProfiles,
-    }))
-
-  return [...treeGroups, ...leftoverGroups]
-}
-
-function buildNavigationTreeGroups(
-  groups: DataSourceTreeGroup[],
-  options: {
-    search_keyword: string
-    connected_profile_ids: Set<string>
-    databases_by_profile: Record<string, DatabaseEntry[]>
-    tables_by_database: Record<string, TableEntry[]>
-  },
-): NavigationTreeGroup[] {
-  const {
-    search_keyword: searchKeyword,
-    connected_profile_ids: connectedProfileIds,
-    databases_by_profile: databasesByProfile,
-    tables_by_database: tablesByDatabase,
-  } = options
-
-  return groups
-    .map((group) => {
-      const profiles = group.profiles
-        .map((profile) => {
-          const matchedByName = searchKeyword
-            ? matchesNavigationSearch(profile.data_source_name, searchKeyword)
-            : false
-          const shouldSearchDatabases = searchKeyword
-            ? connectedProfileIds.has(profile.id)
-            : true
-
-          const visibleDatabases = shouldSearchDatabases
-            ? (databasesByProfile[profile.id] ?? [])
-                .map((database) => {
-                  const matchedDatabase = searchKeyword
-                    ? matchesNavigationSearch(database.name, searchKeyword)
-                    : false
-                  const databaseKey = buildDatabaseKey(profile.id, database.name)
-                  const visibleTables = searchKeyword
-                    ? (tablesByDatabase[databaseKey] ?? [])
-                        .filter((table) => matchesNavigationSearch(table.name, searchKeyword))
-                        .map((table) => ({ entry: table }))
-                    : (tablesByDatabase[databaseKey] ?? []).map((table) => ({ entry: table }))
-
-                  if (searchKeyword && !matchedDatabase && visibleTables.length === 0) {
-                    return null
-                  }
-
-                  return {
-                    entry: database,
-                    matched_by_name: matchedDatabase,
-                    tables: visibleTables,
-                  }
-                })
-                .filter((database): database is NavigationTreeDatabase => database !== null)
-            : []
-
-          if (searchKeyword && !matchedByName && visibleDatabases.length === 0) {
-            return null
-          }
-
-          return {
-            entry: profile,
-            matched_by_name: matchedByName,
-            databases: visibleDatabases,
-          }
-        })
-        .filter((profile): profile is NavigationTreeProfile => profile !== null)
-
-      if (searchKeyword && profiles.length === 0) {
-        return null
-      }
-
-      return {
-        key: group.key,
-        group_id: group.group_id,
-        group_name: group.group_name,
-        profiles,
-      }
-    })
-    .filter((group): group is NavigationTreeGroup => group !== null)
-}
-
-function compareGroupName(left: string, right: string) {
-  if (left === ungroupedGroupName) {
-    return 1
-  }
-  if (right === ungroupedGroupName) {
-    return -1
-  }
-  return left.localeCompare(right, 'zh-CN')
-}
-
-function sortProfiles(profiles: ConnectionProfile[]) {
-  return [...profiles].sort((left, right) => {
-    const groupCompare = compareGroupName(
-      normalizeGroupName(left.group_name),
-      normalizeGroupName(right.group_name),
-    )
-    if (groupCompare !== 0) {
-      return groupCompare
-    }
-
-    return left.data_source_name.localeCompare(right.data_source_name, 'zh-CN')
-  })
-}
-
-function sortDataSourceGroups(groups: DataSourceGroup[]) {
-  return [...groups].sort((left, right) =>
-    left.group_name.localeCompare(right.group_name, 'zh-CN'),
-  )
-}
-
-function profileToForm(profile: ConnectionProfile): SaveConnectionProfilePayload {
-  return {
-    id: profile.id,
-    group_name: profile.group_name,
-    data_source_name: profile.data_source_name,
-    host: profile.host,
-    port: profile.port,
-    username: profile.username,
-    password: profile.password,
-  }
-}
-
-function normalizeProfileForm(
-  form: SaveConnectionProfilePayload,
-): SaveConnectionProfilePayload {
-  return {
-    id: form.id ?? null,
-    group_name: form.group_name?.trim() ? form.group_name.trim() : null,
-    data_source_name: form.data_source_name.trim(),
-    host: form.host.trim(),
-    port: form.port,
-    username: form.username.trim(),
-    password: form.password,
-  }
-}
-
-function normalizeGroupName(groupName: string | null | undefined) {
-  return groupName?.trim() || ungroupedGroupName
-}
-
-function expandAncestorsForProfile(previous: Set<string>, profile: ConnectionProfile) {
-  const next = new Set(previous)
-  next.add(`group:${normalizeGroupName(profile.group_name)}`)
-  return next
-}
-
-function expandAncestorsForDatabase(
-  previous: Set<string>,
-  profile: ConnectionProfile,
-  databaseName: string,
-) {
-  const next = expandAncestorsForProfile(previous, profile)
-  next.add(`profile:${profile.id}`)
-  next.add(`database:${buildDatabaseKey(profile.id, databaseName)}`)
-  return next
-}
-
-function expandAncestorsForProfileNode(previous: Set<string>, profile: ConnectionProfile) {
-  const next = expandAncestorsForProfile(previous, profile)
-  next.add(`profile:${profile.id}`)
-  return next
-}
-
-function expandAncestorsForTable(
-  previous: Set<string>,
-  profile: ConnectionProfile,
-  databaseName: string,
-) {
-  return expandAncestorsForDatabase(previous, profile, databaseName)
-}
-
-function matchesNavigationSearch(value: string, keyword: string) {
-  if (!keyword) {
-    return true
-  }
-
-  return value.toLowerCase().includes(keyword)
-}
-
-function upsertProfile(previous: ConnectionProfile[], profile: ConnectionProfile) {
-  const exists = previous.some((item) => item.id === profile.id)
-  return exists
-    ? previous.map((item) => (item.id === profile.id ? profile : item))
-    : [...previous, profile]
-}
-
-function buildDataCompareHistoryInput(
-  result: DataCompareResponse,
-  request: DataCompareRequest,
-  sourceDataSourceName: string,
-  targetDataSourceName: string,
-): CompareHistoryInput {
-  return {
-    history_type: 'data',
-    source_profile_id: request.source_profile_id,
-    source_data_source_name: sourceDataSourceName,
-    source_database: request.source_database_name,
-    target_profile_id: request.target_profile_id,
-    target_data_source_name: targetDataSourceName,
-    target_database: request.target_database_name,
-    table_mode: request.table_mode,
-    selected_tables:
-      request.table_mode === 'selected' ? request.selected_tables : result.table_results.map((item) => item.source_table),
-    table_detail: {
-      data_tables: result.table_results.map((item) => ({
-        source_table: item.source_table,
-        target_table: item.target_table,
-      })),
-      added_tables: [],
-      modified_tables: [],
-      deleted_tables: [],
-    },
-    performance: {
-      total_elapsed_ms: result.performance.total_elapsed_ms,
-      stages: result.performance.stages,
-      max_parallelism: result.performance.max_parallelism,
-    },
-    source_table_count: result.summary.total_tables,
-    target_table_count: result.summary.total_tables,
-    total_tables: result.summary.total_tables,
-    compared_tables: result.summary.compared_tables,
-    insert_count: result.summary.total_insert_count,
-    update_count: result.summary.total_update_count,
-    delete_count: result.summary.total_delete_count,
-    structure_added_count: 0,
-    structure_modified_count: 0,
-    structure_deleted_count: 0,
-  }
-}
-
-function buildStructureCompareHistoryInput(
-  result: StructureCompareResponse,
-  request: StructureCompareRequest,
-  sourceDataSourceName: string,
-  targetDataSourceName: string,
-): CompareHistoryInput {
-  return {
-    history_type: 'structure',
-    source_profile_id: request.source_profile_id,
-    source_data_source_name: sourceDataSourceName,
-    source_database: request.source_database_name,
-    target_profile_id: request.target_profile_id,
-    target_data_source_name: targetDataSourceName,
-    target_database: request.target_database_name,
-    table_mode: 'all',
-    selected_tables: [],
-    table_detail: {
-      data_tables: [],
-      added_tables: result.added_tables.map((item) => item.table_name),
-      modified_tables: result.modified_tables.map((item) => item.table_name),
-      deleted_tables: result.deleted_tables.map((item) => item.table_name),
-    },
-    performance: result.performance,
-    source_table_count: result.summary.source_table_count,
-    target_table_count: result.summary.target_table_count,
-    total_tables:
-      result.summary.added_table_count +
-      result.summary.modified_table_count +
-      result.summary.deleted_table_count,
-    compared_tables:
-      result.summary.added_table_count +
-      result.summary.modified_table_count +
-      result.summary.deleted_table_count,
-    insert_count: 0,
-    update_count: 0,
-    delete_count: 0,
-    structure_added_count: result.summary.added_table_count,
-    structure_modified_count: result.summary.modified_table_count,
-    structure_deleted_count: result.summary.deleted_table_count,
-  }
-}
-
-function parsePositiveIntegerOrNull(value: string) {
-  const normalized = value.trim()
-  if (!normalized) {
-    return null
-  }
-
-  const parsed = Number.parseInt(normalized, 10)
-  if (!Number.isFinite(parsed) || parsed <= 0) {
-    return null
-  }
-
-  return parsed
-}
-
-function buildDatabaseKey(profileId: string, databaseName: string) {
-  return `${profileId}:${databaseName}`
-}
-
-function createClientId() {
-  return `${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
-
-function formatFileDate(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${year}${month}${day}_${hours}${minutes}${seconds}`
-}
-
-function buildDataCompareSqlFileName(compareForm: CompareFormState) {
-  const source = compareForm.source_database_name || 'source'
-  const target = compareForm.target_database_name || 'target'
-  return `${source}_to_${target}_${formatFileDate(new Date())}.sql`
-}
-
-function buildStructureCompareSqlFileName(compareForm: CompareFormState) {
-  const source = compareForm.source_database_name || 'source'
-  const target = compareForm.target_database_name || 'target'
-  return `${source}_to_${target}_structure_${formatFileDate(new Date())}.sql`
-}
-
-function buildTableDataExportFileName(
-  databaseName: string,
-  tableName: string,
-  format: ExportFileFormat,
-) {
-  return `${databaseName}_${tableName}_${formatFileDate(new Date())}.${format}`
-}
-
-function buildQueryResultExportFileName(
-  databaseName: string | null,
-  format: ExportFileFormat,
-) {
-  const prefix = databaseName || 'query_result'
-  return `${prefix}_${formatFileDate(new Date())}.${format}`
-}
-
-function getExportScopeText(dialog: ExportDialogState) {
-  if (dialog.kind === 'table_data') {
-    if (dialog.scope === 'all_rows') {
-      const hasFilter =
-        Boolean(dialog.load_payload.where_clause?.trim()) ||
-        Boolean(dialog.load_payload.order_by_clause?.trim())
-      return hasFilter ? '当前筛选结果' : '整表数据'
-    }
-    if (dialog.scope === 'selected_rows') {
-      return '所选行'
-    }
-    return '当前页'
-  }
-
-  if (dialog.scope === 'all_rows') {
-    return '完整查询结果'
-  }
-  if (dialog.scope === 'selected_rows') {
-    return '所选行'
-  }
-  return '当前页'
-}
-
-function getExportScopeOptions(dialog: ExportDialogState) {
-  const currentRows = dialog.rows.length
-  const selectedRows = dialog.selected_rows.length
-
-  if (dialog.kind === 'table_data') {
-    const hasFilter =
-      Boolean(dialog.load_payload.where_clause?.trim()) ||
-      Boolean(dialog.load_payload.order_by_clause?.trim())
-
-    return [
-      {
-        value: 'current_page' as ExportScope,
-        label: '当前页',
-        description:
-          currentRows > 0
-            ? `导出当前页已加载的 ${currentRows} 行数据`
-            : '当前页暂无行数据，将仅导出表头',
-        disabled: dialog.columns.length === 0,
-      },
-      {
-        value: 'all_rows' as ExportScope,
-        label: hasFilter ? '当前筛选结果' : '整表数据',
-        description: hasFilter
-          ? '按当前 WHERE / ORDER BY 重新查询并导出全部结果'
-          : '重新查询整张表并导出全部结果',
-        disabled: false,
-      },
-      {
-        value: 'selected_rows' as ExportScope,
-        label: '所选行',
-        description:
-          selectedRows > 0
-            ? `导出当前表格中已选中的 ${selectedRows} 行`
-            : '请先在表格中框选需要导出的行',
-        disabled: selectedRows === 0,
-      },
-    ]
-  }
-
-  return [
-    {
-      value: 'current_page' as ExportScope,
-      label: '当前页',
-      description:
-        currentRows > 0
-          ? `导出当前页已加载的 ${currentRows} 行结果`
-          : '当前页暂无行数据，将仅导出表头',
-      disabled: dialog.columns.length === 0,
-    },
-    {
-      value: 'all_rows' as ExportScope,
-      label: '完整查询结果',
-      description: '重新执行当前 SQL，并导出完整结果集',
-      disabled: false,
-    },
-    {
-      value: 'selected_rows' as ExportScope,
-      label: '所选行',
-      description:
-        selectedRows > 0
-          ? `导出当前结果表格中已选中的 ${selectedRows} 行`
-          : '请先在结果表格中框选需要导出的行',
-      disabled: selectedRows === 0,
-    },
-  ]
-}
-
-async function copyTextToClipboard(text: string) {
-  if ('__TAURI_INTERNALS__' in window) {
-    await writeClipboardText(text)
-    return
-  }
-
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.setAttribute('readonly', 'true')
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-
-  const succeeded = document.execCommand('copy')
-  document.body.removeChild(textarea)
-
-  if (!succeeded) {
-    throw new Error('当前环境不支持写入剪贴板')
-  }
-}
-
-function formatOutputTimestamp(date: Date) {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hours = String(date.getHours()).padStart(2, '0')
-  const minutes = String(date.getMinutes()).padStart(2, '0')
-  const seconds = String(date.getSeconds()).padStart(2, '0')
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`
-}
-
-function quoteIdentifier(raw: string) {
-  return `\`${raw.replaceAll('`', '``')}\``
-}
-
-function buildTableDataSql(
-  databaseName: string,
-  tableName: string,
-  whereClause: string,
-  orderByClause: string,
-  limit: number,
-  offset: number,
-) {
-  const parts = [
-    `SELECT * FROM ${quoteIdentifier(databaseName)}.${quoteIdentifier(tableName)}`,
-  ]
-
-  if (whereClause.trim()) {
-    parts.push(`WHERE ${whereClause.trim()}`)
-  }
-
-  if (orderByClause.trim()) {
-    parts.push(`ORDER BY ${orderByClause.trim()}`)
-  }
-
-  parts.push(`LIMIT ${limit}`)
-
-  if (offset > 0) {
-    parts.push(`OFFSET ${offset}`)
-  }
-
-  return parts.join('\n')
-}
-
-function buildCreateTablePreviewSql(tab: DesignTab) {
-  const columns = tab.design.draft_columns.map((column) => stripDraftColumn(column))
-  const primaryKeys = columns.filter((column) => column.primary_key)
-  const columnSql = columns.map((column) => {
-    const pieces = [
-      quoteIdentifier(column.name),
-      buildFullDataType(column),
-      column.nullable ? 'NULL' : 'NOT NULL',
-    ]
-    if (column.auto_increment) {
-      pieces.push('AUTO_INCREMENT')
-    }
-    if (column.default_value) {
-      pieces.push(`DEFAULT '${column.default_value}'`)
-    }
-    return pieces.join(' ')
-  })
-
-  if (primaryKeys.length > 0) {
-    columnSql.push(
-      `PRIMARY KEY (${primaryKeys.map((column) => quoteIdentifier(column.name)).join(', ')})`,
-    )
-  }
-
-  return `CREATE TABLE ${quoteIdentifier(tab.database_name)}.${quoteIdentifier(
-    tab.design.draft_table_name || 'new_table',
-  )} (\n  ${columnSql.join(',\n  ')}\n)`
-}
-
-function buildDataMutationPreviewSql(tab: DataTab) {
-  return tab.data.rows
-    .filter((row) => row.state !== 'clean')
-    .map((row) => {
-      if (row.state === 'new') {
-        return `INSERT INTO ${quoteIdentifier(tab.database_name)}.${quoteIdentifier(tab.table_name)} (...) VALUES (...);`
-      }
-      if (row.state === 'updated') {
-        return `UPDATE ${quoteIdentifier(tab.database_name)}.${quoteIdentifier(tab.table_name)} SET ... WHERE ...;`
-      }
-      return `DELETE FROM ${quoteIdentifier(tab.database_name)}.${quoteIdentifier(tab.table_name)} WHERE ...;`
-    })
-    .join('\n')
-}
-
-function prettifySql(rawSql: string) {
-  const normalized = rawSql
-    .replace(/\s+/g, ' ')
-    .replace(/\s*,\s*/g, ', ')
-    .trim()
-
-  if (!normalized) {
-    return ''
-  }
-
-  const formatted = normalized
-    .replace(/\b(select)\b/gi, 'SELECT')
-    .replace(/\b(from)\b/gi, '\nFROM')
-    .replace(/\b(where)\b/gi, '\nWHERE')
-    .replace(/\b(order by)\b/gi, '\nORDER BY')
-    .replace(/\b(group by)\b/gi, '\nGROUP BY')
-    .replace(/\b(limit)\b/gi, '\nLIMIT')
-    .replace(/\b(values)\b/gi, '\nVALUES')
-    .replace(/\b(set)\b/gi, '\nSET')
-    .replace(/\b(left join|right join|inner join|outer join|join)\b/gi, '\n$1')
-    .replace(/\b(and)\b/gi, '\n  AND')
-    .replace(/\b(or)\b/gi, '\n  OR')
-
-  return formatted
-    .split('\n')
-    .map((line, index) => (index === 0 ? line.trim() : line.trimStart()))
-    .join('\n')
-}
-
-function createDraftColumn(
-  column: TableColumn,
-  originName: string | null = column.name,
-): DesignDraftColumn {
-  return {
-    ...column,
-    client_id: createClientId(),
-    selected: false,
-    origin_name: originName,
-  }
-}
-
-function stripDraftColumn(column: DesignDraftColumn): TableColumn {
-  return {
-    name: column.name.trim(),
-    data_type: column.data_type.trim(),
-    full_data_type: buildFullDataType(column),
-    length: column.length,
-    scale: column.scale,
-    nullable: column.nullable,
-    primary_key: column.primary_key,
-    auto_increment: column.auto_increment,
-    default_value: column.default_value,
-    comment: column.comment,
-    ordinal_position: column.ordinal_position,
-  }
-}
-
-function buildFullDataType(column: {
-  data_type: string
-  length: number | null
-  scale: number | null
-}) {
-  const dataType = column.data_type.trim().toLowerCase()
-  if (!column.length) {
-    return dataType
-  }
-  if (column.scale == null) {
-    return `${dataType}(${column.length})`
-  }
-  return `${dataType}(${column.length},${column.scale})`
-}
-
-function parseOptionalNumber(raw: string) {
-  const normalized = raw.trim()
-  if (!normalized) {
-    return null
-  }
-  const parsed = Number.parseInt(normalized, 10)
-  return Number.isNaN(parsed) ? null : parsed
-}
-
-function inferDefaultCellValue(rawDefault: string): CellValue {
-  if (rawDefault === 'CURRENT_TIMESTAMP') {
-    return new Date().toISOString().slice(0, 19).replace('T', ' ')
-  }
-  if (!Number.isNaN(Number(rawDefault))) {
-    return Number(rawDefault)
-  }
-  return rawDefault
 }
 
 export default App

@@ -5,8 +5,10 @@ use crate::models::{
     TableDesignMutationPayload, TableEntry,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use mysql::prelude::Queryable;
-use mysql::{Opts, OptsBuilder, Pool, PooledConn, Row, Value};
+use mysql_async::prelude::Queryable;
+use mysql_async::{
+    Conn, OptsBuilder, Pool, PoolConstraints, PoolOpts, QueryResult, Row, TextProtocol, Value,
+};
 use serde_json::{Number, Value as JsonValue};
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Mutex;
@@ -21,8 +23,14 @@ mod table_data;
 
 const SYSTEM_DATABASES: [&str; 4] = ["information_schema", "mysql", "performance_schema", "sys"];
 const MYSQL_STATEMENT_CACHE_SIZE: usize = 128;
-const MYSQL_IO_TIMEOUT_SECS: u64 = 30;
-const MYSQL_TCP_KEEPALIVE_TIME_MS: u32 = 60_000;
+const MYSQL_TCP_KEEPALIVE_SECS: u32 = 60;
+const MYSQL_POOL_MIN_SIZE: usize = 0;
+const MYSQL_POOL_MAX_SIZE: usize = 16;
+const MYSQL_POOL_INACTIVE_CONNECTION_TTL_SECS: u64 = 90;
+const MYSQL_POOL_CONNECTION_TTL_SECS: u64 = 900;
+const MYSQL_WAIT_TIMEOUT_SECS: usize = 30;
+
+type MysqlQueryResult<'a> = QueryResult<'a, 'static, TextProtocol>;
 
 #[derive(Debug)]
 struct PageWindow<T> {
@@ -44,15 +52,23 @@ pub struct MysqlService {
 }
 
 impl MysqlService {
-    pub fn test_connection(&self, profile: &ConnectionProfile) -> Result<ConnectionTestResult> {
-        let mut connection = Self::create_pool(profile)?.get_conn()?;
+    pub async fn test_connection(
+        &self,
+        profile: &ConnectionProfile,
+    ) -> Result<ConnectionTestResult> {
+        let pool = Self::create_pool(profile)?;
+        let mut connection = pool.get_conn().await.context("获取数据库连接失败")?;
         let server_version = connection
             .query_first::<String, _>("SELECT VERSION()")
+            .await
             .context("读取 MySQL 版本失败")?
             .unwrap_or_else(|| "unknown".to_string());
         let current_database = connection
             .query_first::<Option<String>, _>("SELECT DATABASE()")
+            .await
             .context("读取当前数据库失败")?;
+        drop(connection);
+        pool.disconnect().await.context("释放测试连接失败")?;
 
         Ok(ConnectionTestResult {
             server_version,
@@ -60,56 +76,69 @@ impl MysqlService {
         })
     }
 
-    pub fn disconnect(&self, profile_id: &str) -> Result<()> {
-        self.pools
+    pub async fn disconnect(&self, profile_id: &str) -> Result<()> {
+        let removed_pool = self
+            .pools
             .lock()
             .map_err(|_| anyhow!("连接池状态不可用"))?
             .remove(profile_id);
 
+        if let Some(pool) = removed_pool {
+            pool.disconnect().await.context("关闭数据库连接池失败")?;
+        }
+
         Ok(())
     }
 
-    pub fn disconnect_all(&self) -> Result<()> {
-        self.pools
+    pub async fn disconnect_all(&self) -> Result<()> {
+        let pools = self
+            .pools
             .lock()
             .map_err(|_| anyhow!("连接池状态不可用"))?
-            .clear();
+            .drain()
+            .map(|(_, pool)| pool)
+            .collect::<Vec<_>>();
+
+        for pool in pools {
+            pool.disconnect().await.context("关闭数据库连接池失败")?;
+        }
 
         Ok(())
     }
 
-    pub fn list_databases(&self, profile: &ConnectionProfile) -> Result<Vec<DatabaseEntry>> {
-        self.with_conn(profile, |connection| {
-            let table_counts: HashMap<String, u64> = connection
-                .query_map(
-                    "
-                    SELECT TABLE_SCHEMA, COUNT(*)
-                    FROM information_schema.TABLES
-                    WHERE TABLE_TYPE = 'BASE TABLE'
-                    GROUP BY TABLE_SCHEMA
-                    ",
-                    |(schema, count)| (schema, count),
-                )
-                .context("读取数据库表数量失败")?
-                .into_iter()
-                .collect();
+    pub async fn list_databases(&self, profile: &ConnectionProfile) -> Result<Vec<DatabaseEntry>> {
+        let mut connection = self.get_conn(profile).await?;
+        let table_counts: HashMap<String, u64> = connection
+            .query_map(
+                "
+                SELECT TABLE_SCHEMA, COUNT(*)
+                FROM information_schema.TABLES
+                WHERE TABLE_TYPE = 'BASE TABLE'
+                GROUP BY TABLE_SCHEMA
+                ",
+                |(schema, count)| (schema, count),
+            )
+            .await
+            .context("读取数据库表数量失败")?
+            .into_iter()
+            .collect();
 
-            let databases = connection
-                .query_map("SHOW DATABASES", |database_name: String| database_name)
-                .context("读取数据库列表失败")?
-                .into_iter()
-                .filter(|database_name| !SYSTEM_DATABASES.contains(&database_name.as_str()))
-                .map(|database_name| DatabaseEntry {
-                    table_count: table_counts.get(&database_name).copied().unwrap_or(0),
-                    name: database_name,
-                })
-                .collect::<Vec<_>>();
+        let databases = connection
+            .query_map("SHOW DATABASES", |database_name: String| database_name)
+            .await
+            .context("读取数据库列表失败")?
+            .into_iter()
+            .filter(|database_name| !SYSTEM_DATABASES.contains(&database_name.as_str()))
+            .map(|database_name| DatabaseEntry {
+                table_count: table_counts.get(&database_name).copied().unwrap_or(0),
+                name: database_name,
+            })
+            .collect::<Vec<_>>();
 
-            Ok(databases)
-        })
+        Ok(databases)
     }
 
-    pub fn create_database(
+    pub async fn create_database(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -120,19 +149,19 @@ impl MysqlService {
             quote_identifier(&normalized_database_name)
         );
 
-        self.with_conn(profile, |connection| {
-            connection
-                .query_drop(statement.as_str())
-                .context("创建数据库失败")?;
+        let mut connection = self.get_conn(profile).await?;
+        connection
+            .query_drop(statement.as_str())
+            .await
+            .context("创建数据库失败")?;
 
-            Ok(MutationResult {
-                affected_rows: 1,
-                statements: vec![statement],
-            })
+        Ok(MutationResult {
+            affected_rows: 1,
+            statements: vec![statement],
         })
     }
 
-    pub fn list_tables(
+    pub async fn list_tables(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -152,24 +181,22 @@ impl MysqlService {
             ORDER BY t.TABLE_NAME
         ";
 
-        self.with_conn(profile, |connection| {
-            connection
-                .exec_map(
-                    sql,
-                    (database_name,),
-                    |(name, table_rows, column_count): (String, Option<u64>, Option<u64>)| {
-                        TableEntry {
-                            name,
-                            table_rows,
-                            column_count,
-                        }
-                    },
-                )
-                .context("读取数据表列表失败")
-        })
+        let mut connection = self.get_conn(profile).await?;
+        connection
+            .exec_map(
+                sql,
+                (database_name,),
+                |(name, table_rows, column_count): (String, Option<u64>, Option<u64>)| TableEntry {
+                    name,
+                    table_rows,
+                    column_count,
+                },
+            )
+            .await
+            .context("读取数据表列表失败")
     }
 
-    pub fn load_sql_autocomplete(
+    pub async fn load_sql_autocomplete(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -188,70 +215,62 @@ impl MysqlService {
             ORDER BY TABLE_NAME, ORDINAL_POSITION
         ";
 
-        self.with_conn(profile, |connection| {
-            let rows = connection
-                .exec_map(
-                    sql,
-                    (database_name,),
-                    |(
+        let mut connection = self.get_conn(profile).await?;
+        let rows = connection
+            .exec_map(
+                sql,
+                (database_name,),
+                |(
+                    table_name,
+                    column_name,
+                    column_type,
+                    is_nullable,
+                    column_key,
+                    extra,
+                    column_comment,
+                ): (String, String, String, String, String, String, String)| {
+                    (
                         table_name,
-                        column_name,
-                        column_type,
-                        is_nullable,
-                        column_key,
-                        extra,
-                        column_comment,
-                    ): (
-                        String,
-                        String,
-                        String,
-                        String,
-                        String,
-                        String,
-                        String,
-                    )| {
-                        (
-                            table_name,
-                            SqlAutocompleteColumn {
-                                name: column_name,
-                                data_type: column_type,
-                                nullable: is_nullable.eq_ignore_ascii_case("YES"),
-                                primary_key: column_key.eq_ignore_ascii_case("PRI"),
-                                auto_increment: extra
-                                    .to_ascii_lowercase()
-                                    .contains("auto_increment"),
-                                comment: column_comment,
-                            },
-                        )
-                    },
-                )
-                .context("读取 SQL 自动补全元数据失败")?;
+                        SqlAutocompleteColumn {
+                            name: column_name,
+                            data_type: column_type,
+                            nullable: is_nullable.eq_ignore_ascii_case("YES"),
+                            primary_key: column_key.eq_ignore_ascii_case("PRI"),
+                            auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
+                            comment: column_comment,
+                        },
+                    )
+                },
+            )
+            .await
+            .context("读取 SQL 自动补全元数据失败")?;
 
-            let mut grouped = BTreeMap::<String, Vec<SqlAutocompleteColumn>>::new();
-            for (table_name, column) in rows {
-                grouped.entry(table_name).or_default().push(column);
-            }
+        let mut grouped = BTreeMap::<String, Vec<SqlAutocompleteColumn>>::new();
+        for (table_name, column) in rows {
+            grouped.entry(table_name).or_default().push(column);
+        }
 
-            let tables = grouped
-                .into_iter()
-                .map(|(name, columns)| SqlAutocompleteTable { name, columns })
-                .collect();
+        let tables = grouped
+            .into_iter()
+            .map(|(name, columns)| SqlAutocompleteTable { name, columns })
+            .collect();
 
-            Ok(SqlAutocompleteSchema {
-                profile_id: profile.id.clone(),
-                database_name: database_name.to_string(),
-                tables,
-            })
+        Ok(SqlAutocompleteSchema {
+            profile_id: profile.id.clone(),
+            database_name: database_name.to_string(),
+            tables,
         })
     }
 
-    pub fn list_table_columns(
+    pub async fn list_table_columns(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
         table_name: &str,
     ) -> Result<Vec<TableColumnSummary>> {
-        let columns = self.load_columns(profile, database_name, table_name)?;
+        let columns = self
+            .load_columns(profile, database_name, table_name)
+            .await?;
         Ok(columns
             .into_iter()
             .map(|column| TableColumnSummary {
@@ -261,14 +280,19 @@ impl MysqlService {
             .collect())
     }
 
-    pub fn load_table_design(
+    pub async fn load_table_design(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
         table_name: &str,
     ) -> Result<TableDesign> {
-        let columns = self.load_columns(profile, database_name, table_name)?;
-        let ddl = self.get_table_ddl(profile, database_name, table_name)?.ddl;
+        let columns = self
+            .load_columns(profile, database_name, table_name)
+            .await?;
+        let ddl = self
+            .get_table_ddl(profile, database_name, table_name)
+            .await?
+            .ddl;
 
         Ok(TableDesign {
             profile_id: profile.id.clone(),
@@ -279,13 +303,14 @@ impl MysqlService {
         })
     }
 
-    pub fn preview_table_design_sql(
+    pub async fn preview_table_design_sql(
         &self,
         profile: &ConnectionProfile,
         payload: &TableDesignMutationPayload,
     ) -> Result<SqlPreview> {
-        let current_columns =
-            self.load_columns(profile, &payload.database_name, &payload.table_name)?;
+        let current_columns = self
+            .load_columns(profile, &payload.database_name, &payload.table_name)
+            .await?;
         let statements = build_alter_table_statements(
             &payload.database_name,
             &payload.table_name,
@@ -310,12 +335,12 @@ impl MysqlService {
         })
     }
 
-    pub fn apply_table_design_changes(
+    pub async fn apply_table_design_changes(
         &self,
         profile: &ConnectionProfile,
         payload: &TableDesignMutationPayload,
     ) -> Result<MutationResult> {
-        let preview = self.preview_table_design_sql(profile, payload)?;
+        let preview = self.preview_table_design_sql(profile, payload).await?;
 
         if preview.statements.is_empty() {
             return Ok(MutationResult {
@@ -324,21 +349,21 @@ impl MysqlService {
             });
         }
 
-        self.with_conn(profile, |connection| {
-            for statement in &preview.statements {
-                connection
-                    .query_drop(statement.as_str())
-                    .with_context(|| format!("执行表结构变更失败: {statement}"))?;
-            }
+        let mut connection = self.get_conn(profile).await?;
+        for statement in &preview.statements {
+            connection
+                .query_drop(statement.as_str())
+                .await
+                .with_context(|| format!("执行表结构变更失败: {statement}"))?;
+        }
 
-            Ok(MutationResult {
-                affected_rows: preview.statements.len() as u64,
-                statements: preview.statements,
-            })
+        Ok(MutationResult {
+            affected_rows: preview.statements.len() as u64,
+            statements: preview.statements,
         })
     }
 
-    pub fn create_table(
+    pub async fn create_table(
         &self,
         profile: &ConnectionProfile,
         payload: &CreateTablePayload,
@@ -349,19 +374,19 @@ impl MysqlService {
             &payload.columns,
         )?;
 
-        self.with_conn(profile, |connection| {
-            connection
-                .query_drop(statement.as_str())
-                .context("创建数据表失败")?;
+        let mut connection = self.get_conn(profile).await?;
+        connection
+            .query_drop(statement.as_str())
+            .await
+            .context("创建数据表失败")?;
 
-            Ok(MutationResult {
-                affected_rows: 1,
-                statements: vec![statement],
-            })
+        Ok(MutationResult {
+            affected_rows: 1,
+            statements: vec![statement],
         })
     }
 
-    pub fn get_table_ddl(
+    pub async fn get_table_ddl(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -373,18 +398,18 @@ impl MysqlService {
             quote_identifier(table_name)
         );
 
-        self.with_conn(profile, |connection| {
-            let (_, ddl): (String, String) = connection
-                .query_first(sql)
-                .context("读取 DDL 失败")?
-                .context("表不存在或无权限读取 DDL")?;
+        let mut connection = self.get_conn(profile).await?;
+        let (_, ddl): (String, String) = connection
+            .query_first(sql)
+            .await
+            .context("读取 DDL 失败")?
+            .context("表不存在或无权限读取 DDL")?;
 
-            Ok(TableDdl { ddl })
-        })
+        Ok(TableDdl { ddl })
     }
 
     #[allow(dead_code)]
-    pub fn load_all_table_rows(
+    pub async fn load_all_table_rows(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -397,35 +422,31 @@ impl MysqlService {
             quote_identifier(table_name)
         );
 
-        self.with_conn(profile, |connection| {
-            let result = connection
-                .query_iter(sql.as_str())
-                .context("读取全量表数据失败")?;
-            let column_names = result
-                .columns()
-                .as_ref()
-                .iter()
-                .map(|column| column.name_str().to_string())
-                .collect::<Vec<_>>();
+        let mut connection = self.get_conn(profile).await?;
+        let result = connection
+            .query_iter(sql.as_str())
+            .await
+            .context("读取全量表数据失败")?;
+        let column_names = result
+            .columns_ref()
+            .iter()
+            .map(|column| column.name_str().to_string())
+            .collect::<Vec<_>>();
 
-            result
-                .map(|row_result| {
-                    let row = row_result?;
-                    build_table_data_row(row, &column_names, key_columns)
-                })
-                .collect::<Result<Vec<_>>>()
-        })
+        collect_all_rows_from_result(result, &column_names, key_columns).await
     }
 
     #[allow(dead_code)]
-    pub fn preview_table_sync_sql(
+    pub async fn preview_table_sync_sql(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
         table_name: &str,
         source_columns: Vec<TableColumn>,
     ) -> Result<SqlPreview> {
-        let current_columns = self.load_columns(profile, database_name, table_name)?;
+        let current_columns = self
+            .load_columns(profile, database_name, table_name)
+            .await?;
         let statements = build_alter_table_statements(
             database_name,
             table_name,
@@ -435,7 +456,7 @@ impl MysqlService {
         Ok(SqlPreview { statements })
     }
 
-    fn load_columns(
+    pub(super) async fn load_columns(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
@@ -447,69 +468,64 @@ impl MysqlService {
             quote_identifier(database_name)
         );
 
-        self.with_conn(profile, |connection| {
-            connection
-                .query_map(
-                    sql,
-                    |(
-                        field,
-                        column_type,
-                        _collation,
-                        null_flag,
-                        key,
+        let mut connection = self.get_conn(profile).await?;
+        connection
+            .query_map(
+                sql,
+                |(
+                    field,
+                    column_type,
+                    _collation,
+                    null_flag,
+                    key,
+                    default_value,
+                    extra,
+                    _privileges,
+                    comment,
+                ): (
+                    String,
+                    String,
+                    Option<String>,
+                    String,
+                    String,
+                    Option<String>,
+                    String,
+                    String,
+                    String,
+                )| {
+                    let (data_type, length, scale) = parse_type_details(&column_type);
+                    TableColumn {
+                        name: field,
+                        data_type,
+                        full_data_type: column_type,
+                        length,
+                        scale,
+                        nullable: null_flag.eq_ignore_ascii_case("YES"),
+                        primary_key: key.eq_ignore_ascii_case("PRI"),
+                        auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
                         default_value,
-                        extra,
-                        _privileges,
                         comment,
-                    ): (
-                        String,
-                        String,
-                        Option<String>,
-                        String,
-                        String,
-                        Option<String>,
-                        String,
-                        String,
-                        String,
-                    )| {
-                        let (data_type, length, scale) = parse_type_details(&column_type);
-                        TableColumn {
-                            name: field,
-                            data_type,
-                            full_data_type: column_type,
-                            length,
-                            scale,
-                            nullable: null_flag.eq_ignore_ascii_case("YES"),
-                            primary_key: key.eq_ignore_ascii_case("PRI"),
-                            auto_increment: extra.to_ascii_lowercase().contains("auto_increment"),
-                            default_value,
-                            comment,
-                            ordinal_position: 0,
-                        }
-                    },
-                )
-                .context("读取字段列表失败")
-                .map(|columns| {
-                    columns
-                        .into_iter()
-                        .enumerate()
-                        .map(|(index, mut column)| {
-                            column.ordinal_position = index as u32 + 1;
-                            column
-                        })
-                        .collect()
-                })
-        })
+                        ordinal_position: 0,
+                    }
+                },
+            )
+            .await
+            .context("读取字段列表失败")
+            .map(|columns| {
+                columns
+                    .into_iter()
+                    .enumerate()
+                    .map(|(index, mut column)| {
+                        column.ordinal_position = index as u32 + 1;
+                        column
+                    })
+                    .collect()
+            })
     }
 
-    fn with_conn<T>(
-        &self,
-        profile: &ConnectionProfile,
-        handler: impl FnOnce(&mut PooledConn) -> Result<T>,
-    ) -> Result<T> {
+    async fn get_conn(&self, profile: &ConnectionProfile) -> Result<Conn> {
         let pool = self.get_or_create_pool(profile)?;
-        let mut connection = pool.get_conn().context("获取数据库连接失败")?;
-        handler(&mut connection)
+        pool.get_conn().await.context("获取数据库连接失败")
     }
 
     fn get_or_create_pool(&self, profile: &ConnectionProfile) -> Result<Pool> {
@@ -525,18 +541,26 @@ impl MysqlService {
     }
 
     fn create_pool(profile: &ConnectionProfile) -> Result<Pool> {
-        let mut builder = OptsBuilder::new();
-        builder = builder
-            .ip_or_hostname(Some(profile.host.clone()))
+        let constraints = PoolConstraints::new(MYSQL_POOL_MIN_SIZE, MYSQL_POOL_MAX_SIZE)
+            .ok_or_else(|| anyhow!("MySQL 连接池参数非法"))?;
+        let pool_opts = PoolOpts::new()
+            .with_constraints(constraints)
+            .with_inactive_connection_ttl(Duration::from_secs(
+                MYSQL_POOL_INACTIVE_CONNECTION_TTL_SECS,
+            ))
+            .with_reset_connection(true);
+        let builder = OptsBuilder::default()
+            .ip_or_hostname(profile.host.clone())
             .tcp_port(profile.port)
             .user(Some(profile.username.clone()))
             .pass(Some(profile.password.clone()))
-            .read_timeout(Some(Duration::from_secs(MYSQL_IO_TIMEOUT_SECS)))
-            .write_timeout(Some(Duration::from_secs(MYSQL_IO_TIMEOUT_SECS)))
-            .tcp_keepalive_time_ms(Some(MYSQL_TCP_KEEPALIVE_TIME_MS))
-            .stmt_cache_size(Some(MYSQL_STATEMENT_CACHE_SIZE));
+            .tcp_keepalive(Some(MYSQL_TCP_KEEPALIVE_SECS))
+            .pool_opts(Some(pool_opts))
+            .conn_ttl(Some(Duration::from_secs(MYSQL_POOL_CONNECTION_TTL_SECS)))
+            .stmt_cache_size(Some(MYSQL_STATEMENT_CACHE_SIZE))
+            .wait_timeout(Some(MYSQL_WAIT_TIMEOUT_SECS));
 
-        Pool::new(Opts::from(builder)).context("初始化 MySQL 连接池失败")
+        Ok(Pool::new(builder))
     }
 }
 
@@ -570,17 +594,20 @@ fn build_table_data_row(
     })
 }
 
-fn collect_page_window<T>(
-    rows: impl IntoIterator<Item = Result<T>>,
+async fn collect_page_window_from_result(
+    mut result: MysqlQueryResult<'_>,
+    column_names: &[String],
+    primary_keys: &[String],
     limit: u64,
-) -> Result<PageWindow<T>> {
+) -> Result<PageWindow<TableDataRow>> {
     let mut collected_rows = Vec::new();
 
-    for row in rows {
-        collected_rows.push(row?);
+    while let Some(row) = result.next().await.context("读取结果集行失败")? {
+        collected_rows.push(build_table_data_row(row, column_names, primary_keys)?);
         if collected_rows.len() as u64 > limit {
             let total_rows = collected_rows.len() as u64;
             collected_rows.truncate(limit as usize);
+            result.drop_result().await.context("清理结果集失败")?;
             return Ok(PageWindow {
                 rows: collected_rows,
                 total_rows,
@@ -590,6 +617,7 @@ fn collect_page_window<T>(
         }
     }
 
+    result.drop_result().await.context("清理结果集失败")?;
     Ok(PageWindow {
         total_rows: collected_rows.len() as u64,
         rows: collected_rows,
@@ -598,16 +626,18 @@ fn collect_page_window<T>(
     })
 }
 
-fn collect_offset_page_window<T>(
-    rows: impl IntoIterator<Item = Result<T>>,
+async fn collect_offset_page_window_from_result(
+    mut result: MysqlQueryResult<'_>,
+    column_names: &[String],
+    primary_keys: &[String],
     offset: u64,
     limit: u64,
-) -> Result<PageWindow<T>> {
+) -> Result<PageWindow<TableDataRow>> {
     let mut total_rows = 0_u64;
     let mut page_rows = Vec::new();
 
-    for row in rows {
-        let row = row?;
+    while let Some(row) = result.next().await.context("读取结果集行失败")? {
+        let row = build_table_data_row(row, column_names, primary_keys)?;
         if total_rows < offset {
             total_rows += 1;
             continue;
@@ -615,6 +645,7 @@ fn collect_offset_page_window<T>(
 
         if page_rows.len() as u64 >= limit {
             total_rows += 1;
+            result.drop_result().await.context("清理结果集失败")?;
             return Ok(PageWindow {
                 rows: page_rows,
                 total_rows,
@@ -627,12 +658,28 @@ fn collect_offset_page_window<T>(
         page_rows.push(row);
     }
 
+    result.drop_result().await.context("清理结果集失败")?;
     Ok(PageWindow {
         rows: page_rows,
         total_rows,
         row_count_exact: true,
         truncated: false,
     })
+}
+
+async fn collect_all_rows_from_result(
+    mut result: MysqlQueryResult<'_>,
+    column_names: &[String],
+    primary_keys: &[String],
+) -> Result<Vec<TableDataRow>> {
+    let mut rows = Vec::new();
+
+    while let Some(row) = result.next().await.context("读取结果集行失败")? {
+        rows.push(build_table_data_row(row, column_names, primary_keys)?);
+    }
+
+    result.drop_result().await.context("清理结果集失败")?;
+    Ok(rows)
 }
 
 fn build_query_page_message(

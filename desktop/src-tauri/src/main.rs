@@ -146,7 +146,8 @@ fn main() {
         if let RunEvent::Exit = event
             && let Some(state) = app_handle.try_state::<AppState>()
         {
-            if let Err(error) = state.mysql_service.disconnect_all() {
+            if let Err(error) = tauri::async_runtime::block_on(state.mysql_service.disconnect_all())
+            {
                 warn!(error = %error, "failed to disconnect mysql pools before exit");
             }
             if let Err(error) = tauri::async_runtime::block_on(state.plugin_host.stop_all()) {

@@ -1,14 +1,15 @@
 use super::{
-    MysqlService, build_query_page_message, build_table_data_row, collect_offset_page_window,
-    collect_page_window, is_pageable_console_query, normalize_console_sql, quote_identifier,
+    MysqlService, build_query_page_message, collect_offset_page_window_from_result,
+    collect_page_window_from_result, is_pageable_console_query, normalize_console_sql,
+    quote_identifier,
 };
 use crate::models::{ConnectionProfile, ExecuteSqlPayload, SqlConsoleResult, TableDataColumn};
 use anyhow::{Context, Result};
-use mysql::PooledConn;
-use mysql::prelude::Queryable;
+use mysql_async::Conn;
+use mysql_async::prelude::Queryable;
 
 impl MysqlService {
-    pub fn execute_sql(
+    pub async fn execute_sql(
         &self,
         profile: &ConnectionProfile,
         payload: &ExecuteSqlPayload,
@@ -17,43 +18,45 @@ impl MysqlService {
         let offset = payload.offset.unwrap_or(0);
         let normalized_sql = normalize_console_sql(&payload.sql)?;
 
-        self.with_conn(profile, |connection| {
-            if let Some(database_name) = payload.database_name.as_deref() {
-                let normalized_database_name =
-                    super::normalize_identifier_name(database_name, "数据库名")?;
-                connection
-                    .query_drop(format!(
-                        "USE {}",
-                        quote_identifier(&normalized_database_name)
-                    ))
-                    .context("切换数据库失败")?;
-            }
+        let mut connection = self.get_conn(profile).await?;
+        if let Some(database_name) = payload.database_name.as_deref() {
+            let normalized_database_name =
+                super::normalize_identifier_name(database_name, "数据库名")?;
+            connection
+                .query_drop(format!(
+                    "USE {}",
+                    quote_identifier(&normalized_database_name)
+                ))
+                .await
+                .context("切换数据库失败")?;
+        }
 
-            if is_pageable_console_query(&normalized_sql) {
-                return execute_pageable_console_query(
-                    connection,
-                    profile,
-                    payload,
-                    &normalized_sql,
-                    offset,
-                    limit,
-                );
-            }
-
-            execute_direct_console_query(
-                connection,
+        if is_pageable_console_query(&normalized_sql) {
+            return execute_pageable_console_query(
+                &mut connection,
                 profile,
                 payload,
                 &normalized_sql,
                 offset,
                 limit,
             )
-        })
+            .await;
+        }
+
+        execute_direct_console_query(
+            &mut connection,
+            profile,
+            payload,
+            &normalized_sql,
+            offset,
+            limit,
+        )
+        .await
     }
 }
 
-fn execute_pageable_console_query(
-    connection: &mut PooledConn,
+async fn execute_pageable_console_query(
+    connection: &mut Conn,
     profile: &ConnectionProfile,
     payload: &ExecuteSqlPayload,
     normalized_sql: &str,
@@ -64,13 +67,13 @@ fn execute_pageable_console_query(
         "SELECT * FROM ({normalized_sql}) __zszc_console_page LIMIT {} OFFSET {offset}",
         limit + 1
     );
-    let mut result = connection
+    let result = connection
         .query_iter(page_sql.as_str())
+        .await
         .context("执行 SQL 失败")?;
 
     let columns = result
-        .columns()
-        .as_ref()
+        .columns_ref()
         .iter()
         .map(|column| TableDataColumn {
             name: column.name_str().to_string(),
@@ -86,13 +89,7 @@ fn execute_pageable_console_query(
         .iter()
         .map(|column| column.name.clone())
         .collect::<Vec<_>>();
-    let page_window = collect_page_window(
-        result.by_ref().map(|row_result| {
-            let row = row_result?;
-            build_table_data_row(row, &column_names, &[])
-        }),
-        limit,
-    )?;
+    let page_window = collect_page_window_from_result(result, &column_names, &[], limit).await?;
     let total_rows = offset + page_window.total_rows;
     let range_start = if page_window.rows.is_empty() {
         0
@@ -127,21 +124,21 @@ fn execute_pageable_console_query(
     })
 }
 
-fn execute_direct_console_query(
-    connection: &mut PooledConn,
+async fn execute_direct_console_query(
+    connection: &mut Conn,
     profile: &ConnectionProfile,
     payload: &ExecuteSqlPayload,
     normalized_sql: &str,
     offset: u64,
     limit: u64,
 ) -> Result<SqlConsoleResult> {
-    let mut result = connection
+    let result = connection
         .query_iter(normalized_sql)
+        .await
         .context("执行 SQL 失败")?;
 
     let columns = result
-        .columns()
-        .as_ref()
+        .columns_ref()
         .iter()
         .map(|column| TableDataColumn {
             name: column.name_str().to_string(),
@@ -156,7 +153,8 @@ fn execute_direct_console_query(
 
     if columns.is_empty() {
         let affected_rows = result.affected_rows();
-        let info = result.info_str().to_string();
+        let info = result.info().to_string();
+        result.drop_result().await.context("清理结果集失败")?;
 
         return Ok(SqlConsoleResult {
             profile_id: profile.id.clone(),
@@ -183,14 +181,8 @@ fn execute_direct_console_query(
         .iter()
         .map(|column| column.name.clone())
         .collect::<Vec<_>>();
-    let page_window = collect_offset_page_window(
-        result.by_ref().map(|row_result| {
-            let row = row_result?;
-            build_table_data_row(row, &column_names, &[])
-        }),
-        offset,
-        limit,
-    )?;
+    let page_window =
+        collect_offset_page_window_from_result(result, &column_names, &[], offset, limit).await?;
     let range_start = if page_window.rows.is_empty() {
         0
     } else {

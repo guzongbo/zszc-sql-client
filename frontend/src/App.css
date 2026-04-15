@@ -1113,6 +1113,12 @@
   font-size: 12px;
 }
 
+.redis-key-status {
+  color: #7f8a99;
+  font-size: 12px;
+  text-align: right;
+}
+
 .redis-key-tools input,
 .redis-key-tools .flat-button,
 .redis-key-tools .redis-type-pill {
@@ -1126,15 +1132,6 @@
 
 .redis-key-tools .redis-type-pill {
   min-width: 78px;
-}
-
-.redis-load-more {
-  width: 100%;
-}
-
-.redis-key-footer .redis-load-more {
-  width: auto;
-  min-width: 96px;
 }
 
 .redis-empty {
@@ -1417,7 +1414,7 @@
 .pane-title {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-bottom: 14px;
 }
 
@@ -1425,6 +1422,18 @@
   color: #f1f5fb;
   font-size: 15px;
   font-weight: 700;
+}
+
+.pane-glyph {
+  flex: 0 0 14px;
+  width: 14px;
+  height: 14px;
+  color: #8eb4f7;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.6;
 }
 
 .pane-actions {
@@ -1436,7 +1445,6 @@
 .navigation-search-card {
   display: flex;
   flex-direction: column;
-  gap: 8px;
   margin-bottom: 14px;
 }
 

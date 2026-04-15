@@ -1,5 +1,5 @@
 use super::{
-    MysqlService, TableDataContext, build_table_data_row, collect_page_window, json_to_mysql_value,
+    MysqlService, TableDataContext, collect_page_window_from_result, json_to_mysql_value,
     normalize_raw_clause, quote_identifier, validate_raw_clause,
 };
 use crate::models::{
@@ -8,12 +8,12 @@ use crate::models::{
     TableDataPage, UpdatedRowPayload,
 };
 use anyhow::{Context, Result, anyhow, ensure};
-use mysql::prelude::Queryable;
-use mysql::{TxOpts, Value};
+use mysql_async::prelude::Queryable;
+use mysql_async::{TxOpts, Value};
 use serde_json::Value as JsonValue;
 
 impl MysqlService {
-    pub fn load_table_data(
+    pub async fn load_table_data(
         &self,
         profile: &ConnectionProfile,
         payload: &LoadTableDataPayload,
@@ -26,8 +26,9 @@ impl MysqlService {
 
         let limit = payload.limit.unwrap_or(100).clamp(1, 500);
         let offset = payload.offset.unwrap_or(0);
-        let table_context =
-            self.load_table_data_context(profile, &payload.database_name, &payload.table_name)?;
+        let table_context = self
+            .load_table_data_context(profile, &payload.database_name, &payload.table_name)
+            .await?;
         let primary_keys = table_context.primary_keys.clone();
 
         let mut data_sql = format!(
@@ -55,47 +56,44 @@ impl MysqlService {
         // 额外多取一行，用于判断是否还有下一页，避免默认执行昂贵的 COUNT(*)
         data_sql.push_str(&format!(" LIMIT {} OFFSET {}", limit + 1, offset));
 
-        self.with_conn(profile, |connection| {
-            let result = connection.query_iter(data_sql).context("读取表数据失败")?;
+        let mut connection = self.get_conn(profile).await?;
+        let result = connection
+            .query_iter(data_sql)
+            .await
+            .context("读取表数据失败")?;
 
-            let column_names = result
-                .columns()
-                .as_ref()
-                .iter()
-                .map(|column| column.name_str().to_string())
-                .collect::<Vec<_>>();
+        let column_names = result
+            .columns_ref()
+            .iter()
+            .map(|column| column.name_str().to_string())
+            .collect::<Vec<_>>();
 
-            let page_window = collect_page_window(
-                result.map(|row_result| {
-                    let row = row_result?;
-                    build_table_data_row(row, &column_names, &primary_keys)
-                }),
-                limit,
-            )?;
+        let page_window =
+            collect_page_window_from_result(result, &column_names, &primary_keys, limit).await?;
 
-            Ok(TableDataPage {
-                profile_id: profile.id.clone(),
-                database_name: payload.database_name.clone(),
-                table_name: payload.table_name.clone(),
-                columns: table_context.columns.clone(),
-                rows: page_window.rows,
-                primary_keys: primary_keys.clone(),
-                offset,
-                limit,
-                total_rows: offset + page_window.total_rows,
-                row_count_exact: page_window.row_count_exact,
-                editable: !primary_keys.is_empty(),
-            })
+        Ok(TableDataPage {
+            profile_id: profile.id.clone(),
+            database_name: payload.database_name.clone(),
+            table_name: payload.table_name.clone(),
+            columns: table_context.columns.clone(),
+            rows: page_window.rows,
+            primary_keys: primary_keys.clone(),
+            offset,
+            limit,
+            total_rows: offset + page_window.total_rows,
+            row_count_exact: page_window.row_count_exact,
+            editable: !primary_keys.is_empty(),
         })
     }
 
-    pub fn apply_table_data_changes(
+    pub async fn apply_table_data_changes(
         &self,
         profile: &ConnectionProfile,
         payload: &ApplyTableDataChangesPayload,
     ) -> Result<MutationResult> {
-        let design =
-            self.load_table_design(profile, &payload.database_name, &payload.table_name)?;
+        let design = self
+            .load_table_design(profile, &payload.database_name, &payload.table_name)
+            .await?;
         let primary_keys = design
             .columns
             .iter()
@@ -110,68 +108,72 @@ impl MysqlService {
 
         let statements = preview_data_statements(payload, &design.columns)?;
 
-        self.with_conn(profile, |connection| {
-            let mut transaction = connection
-                .start_transaction(TxOpts::default())
-                .context("开启事务失败")?;
+        let mut connection = self.get_conn(profile).await?;
+        let mut transaction = connection
+            .start_transaction(TxOpts::default())
+            .await
+            .context("开启事务失败")?;
 
-            for deleted_row in &payload.deleted_rows {
-                let (statement, params) = build_delete_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &primary_keys,
-                    deleted_row,
-                )?;
+        for deleted_row in &payload.deleted_rows {
+            let (statement, params) = build_delete_statement(
+                &payload.database_name,
+                &payload.table_name,
+                &primary_keys,
+                deleted_row,
+            )?;
+            transaction
+                .exec_drop(statement, params)
+                .await
+                .context("删除数据行失败")?;
+        }
+
+        for updated_row in &payload.updated_rows {
+            let (statement, params) = build_update_statement(
+                &payload.database_name,
+                &payload.table_name,
+                &design.columns,
+                &primary_keys,
+                updated_row,
+            )?;
+            if !statement.is_empty() {
                 transaction
                     .exec_drop(statement, params)
-                    .context("删除数据行失败")?;
+                    .await
+                    .context("更新数据行失败")?;
             }
+        }
 
-            for updated_row in &payload.updated_rows {
-                let (statement, params) = build_update_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &design.columns,
-                    &primary_keys,
-                    updated_row,
-                )?;
-                if !statement.is_empty() {
-                    transaction
-                        .exec_drop(statement, params)
-                        .context("更新数据行失败")?;
-                }
-            }
+        for inserted_row in &payload.inserted_rows {
+            let (statement, params) = build_insert_statement(
+                &payload.database_name,
+                &payload.table_name,
+                &design.columns,
+                inserted_row,
+            )?;
+            transaction
+                .exec_drop(statement, params)
+                .await
+                .context("新增数据行失败")?;
+        }
 
-            for inserted_row in &payload.inserted_rows {
-                let (statement, params) = build_insert_statement(
-                    &payload.database_name,
-                    &payload.table_name,
-                    &design.columns,
-                    inserted_row,
-                )?;
-                transaction
-                    .exec_drop(statement, params)
-                    .context("新增数据行失败")?;
-            }
+        transaction.commit().await.context("提交事务失败")?;
 
-            transaction.commit().context("提交事务失败")?;
-
-            Ok(MutationResult {
-                affected_rows: (payload.deleted_rows.len()
-                    + payload.updated_rows.len()
-                    + payload.inserted_rows.len()) as u64,
-                statements,
-            })
+        Ok(MutationResult {
+            affected_rows: (payload.deleted_rows.len()
+                + payload.updated_rows.len()
+                + payload.inserted_rows.len()) as u64,
+            statements,
         })
     }
 
-    pub fn preview_table_data_changes(
+    pub async fn preview_table_data_changes(
         &self,
         profile: &ConnectionProfile,
         payload: &ApplyTableDataChangesPayload,
     ) -> Result<SqlPreview> {
-        let design =
-            self.load_table_design(profile, &payload.database_name, &payload.table_name)?;
+        let design = self
+            .load_table_design(profile, &payload.database_name, &payload.table_name)
+            .await?;
         let primary_keys = design
             .columns
             .iter()
@@ -189,13 +191,15 @@ impl MysqlService {
         })
     }
 
-    pub(super) fn load_table_data_context(
+    pub(super) async fn load_table_data_context(
         &self,
         profile: &ConnectionProfile,
         database_name: &str,
         table_name: &str,
     ) -> Result<TableDataContext> {
-        let columns = self.load_columns(profile, database_name, table_name)?;
+        let columns = self
+            .load_columns(profile, database_name, table_name)
+            .await?;
         let primary_keys = columns
             .iter()
             .filter(|column| column.primary_key)

@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState, type CSSProperties, type MouseEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type MouseEvent,
+} from 'react'
 import {
   createDataSourceGroup,
   connectRedis,
@@ -58,8 +65,7 @@ const defaultRedisForm: SaveRedisConnectionPayload = {
   connect_timeout_ms: 5000,
 }
 
-const REDIS_INITIAL_SCAN_LIMIT = 200
-const REDIS_INCREMENTAL_SCAN_LIMIT = 500
+const REDIS_SCAN_BATCH_LIMIT = 500
 
 export function RedisWorkspace() {
   const [dataSourceGroups, setDataSourceGroups] = useState<DataSourceGroup[]>([])
@@ -102,6 +108,7 @@ export function RedisWorkspace() {
   const [ttlDraft, setTtlDraft] = useState('')
   const [renameDraft, setRenameDraft] = useState('')
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set())
+  const scanRequestIdRef = useRef(0)
 
   const activeProfile = useMemo(
     () => profiles.find((profile) => profile.id === activeProfileId) ?? null,
@@ -122,7 +129,6 @@ export function RedisWorkspace() {
     () => groupRedisProfiles(filteredProfiles, dataSourceGroups),
     [dataSourceGroups, filteredProfiles],
   )
-  const hasMoreKeys = scanCursor !== '0'
   const visibleKeys = useMemo(() => filterRedisKeys(keys, keySearch), [keySearch, keys])
   const searchActive = keySearch.trim().length > 0
   const keyTreeRows = useMemo(
@@ -481,8 +487,11 @@ export function RedisWorkspace() {
       return
     }
 
-    const cursor = reset ? '0' : scanCursor
-    const limit = reset ? REDIS_INITIAL_SCAN_LIMIT : REDIS_INCREMENTAL_SCAN_LIMIT
+    const requestId = scanRequestIdRef.current + 1
+    scanRequestIdRef.current = requestId
+    let nextCursor = reset ? '0' : scanCursor
+    let nextKeys = reset ? [] : keys
+    const limit = REDIS_SCAN_BATCH_LIMIT
     setKeyLoading(true)
     setErrorMessage('')
     try {
@@ -490,26 +499,37 @@ export function RedisWorkspace() {
         setSelectedKeyName('')
         setKeyDetail(null)
         setKeys([])
+        setScanCursor('0')
         setExpandedGroups(new Set())
       }
 
-      // 连接或刷新时只拉首批 key，避免初始化阶段把整个 DB 扫完。
-      const response = await scanRedisKeys({
-        profile_id: profile.id,
-        database_index: targetDatabaseIndex,
-        pattern: '*',
-        cursor,
-        limit,
-        type_filter: null,
-      })
+      do {
+        const response = await scanRedisKeys({
+          profile_id: profile.id,
+          database_index: targetDatabaseIndex,
+          pattern: '*',
+          cursor: nextCursor,
+          limit,
+          type_filter: null,
+        })
 
-      const nextKeys = mergeRedisKeys(reset ? [] : keys, response.keys)
-      setKeys(nextKeys)
-      setScanCursor(response.cursor)
+        if (scanRequestIdRef.current !== requestId) {
+          return
+        }
+
+        nextKeys = mergeRedisKeys(nextKeys, response.keys)
+        nextCursor = response.cursor
+        setKeys(nextKeys)
+        setScanCursor(nextCursor)
+      } while (nextCursor !== '0')
     } catch (error) {
-      setErrorMessage(toErrorText(error, '扫描 Redis key 失败'))
+      if (scanRequestIdRef.current === requestId) {
+        setErrorMessage(toErrorText(error, '扫描 Redis key 失败'))
+      }
     } finally {
-      setKeyLoading(false)
+      if (scanRequestIdRef.current === requestId) {
+        setKeyLoading(false)
+      }
     }
   }
 
@@ -744,12 +764,14 @@ export function RedisWorkspace() {
   }
 
   function resetKeyState(nextDatabaseIndex = 0) {
+    scanRequestIdRef.current += 1
     setDatabaseIndex(nextDatabaseIndex)
     setKeySearch('')
     setScanCursor('0')
     setKeys([])
     setSelectedKeyName('')
     setKeyDetail(null)
+    setKeyLoading(false)
     setExpandedGroups(new Set())
   }
 
@@ -858,7 +880,9 @@ export function RedisWorkspace() {
                 {!activeProfile
                   ? '请选择 Redis 连接。'
                   : keys.length === 0
-                    ? '连接后默认只加载首批 key，可继续加载更多。'
+                    ? keyLoading
+                      ? '正在加载当前 DB 的全部 key。'
+                      : '当前 DB 没有 key。'
                     : '没有匹配的 key。'}
               </div>
             ) : (
@@ -937,14 +961,13 @@ export function RedisWorkspace() {
               </select>
               <small>{visibleKeys.length}/{keys.length}</small>
             </label>
-            <button
-              className="flat-button redis-load-more"
-              disabled={!activeProfile || keyLoading || !hasMoreKeys}
-              type="button"
-              onClick={() => void handleScanKeys(false)}
-            >
-              {hasMoreKeys ? '加载更多' : '没有更多'}
-            </button>
+            <div className="redis-key-status">
+              {!activeProfile
+                ? '未连接'
+                : keyLoading
+                  ? `正在加载全部 key，当前已获取 ${keys.length} 个`
+                  : `已加载全部 ${keys.length} 个 key`}
+            </div>
           </div>
         </section>
 

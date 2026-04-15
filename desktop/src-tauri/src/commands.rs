@@ -118,7 +118,7 @@ pub fn assign_profiles_to_data_source_group(
 }
 
 #[tauri::command]
-pub fn save_connection_profile(
+pub async fn save_connection_profile(
     state: State<'_, AppState>,
     payload: SaveConnectionProfilePayload,
 ) -> Result<ConnectionProfile, String> {
@@ -130,6 +130,7 @@ pub fn save_connection_profile(
     state
         .mysql_service
         .disconnect(&profile.id)
+        .await
         .map_err(to_error_message)?;
 
     Ok(sanitize_connection_profile(profile))
@@ -169,7 +170,7 @@ pub fn import_navicat_connection_profiles(
 }
 
 #[tauri::command]
-pub fn delete_connection_profile(
+pub async fn delete_connection_profile(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<(), String> {
@@ -181,13 +182,14 @@ pub fn delete_connection_profile(
     state
         .mysql_service
         .disconnect(&profile_id)
+        .await
         .map_err(to_error_message)?;
 
     Ok(())
 }
 
 #[tauri::command]
-pub fn test_connection_profile(
+pub async fn test_connection_profile(
     state: State<'_, AppState>,
     payload: SaveConnectionProfilePayload,
 ) -> Result<ConnectionTestResult, String> {
@@ -195,22 +197,24 @@ pub fn test_connection_profile(
     state
         .mysql_service
         .test_connection(&profile)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn disconnect_connection_profile(
+pub async fn disconnect_connection_profile(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<(), String> {
     state
         .mysql_service
         .disconnect(&profile_id)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn list_profile_databases(
+pub async fn list_profile_databases(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<Vec<DatabaseEntry>, String> {
@@ -218,11 +222,12 @@ pub fn list_profile_databases(
     state
         .mysql_service
         .list_databases(&profile)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn create_database(
+pub async fn create_database(
     state: State<'_, AppState>,
     payload: CreateDatabasePayload,
 ) -> Result<MutationResult, String> {
@@ -230,11 +235,12 @@ pub fn create_database(
     state
         .mysql_service
         .create_database(&profile, &payload.database_name)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn list_database_tables(
+pub async fn list_database_tables(
     state: State<'_, AppState>,
     profile_id: String,
     database_name: String,
@@ -243,11 +249,12 @@ pub fn list_database_tables(
     state
         .mysql_service
         .list_tables(&profile, &database_name)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn load_sql_autocomplete(
+pub async fn load_sql_autocomplete(
     state: State<'_, AppState>,
     payload: LoadSqlAutocompletePayload,
 ) -> Result<SqlAutocompleteSchema, String> {
@@ -255,6 +262,7 @@ pub fn load_sql_autocomplete(
     state
         .mysql_service
         .load_sql_autocomplete(&profile, &payload.database_name)
+        .await
         .map_err(to_error_message)
 }
 
@@ -933,7 +941,7 @@ pub fn compare_history_add(
 }
 
 #[tauri::command]
-pub fn list_table_columns(
+pub async fn list_table_columns(
     state: State<'_, AppState>,
     payload: TableIdentity,
 ) -> Result<Vec<TableColumnSummary>, String> {
@@ -941,11 +949,12 @@ pub fn list_table_columns(
     state
         .mysql_service
         .list_table_columns(&profile, &payload.database_name, &payload.table_name)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn load_table_design(
+pub async fn load_table_design(
     state: State<'_, AppState>,
     payload: TableIdentity,
 ) -> Result<TableDesign, String> {
@@ -953,11 +962,12 @@ pub fn load_table_design(
     state
         .mysql_service
         .load_table_design(&profile, &payload.database_name, &payload.table_name)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn preview_table_design_sql(
+pub async fn preview_table_design_sql(
     state: State<'_, AppState>,
     payload: TableDesignMutationPayload,
 ) -> Result<SqlPreview, String> {
@@ -965,6 +975,7 @@ pub fn preview_table_design_sql(
     state
         .mysql_service
         .preview_table_design_sql(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
@@ -981,7 +992,7 @@ pub fn preview_create_table_sql(
 }
 
 #[tauri::command]
-pub fn apply_table_design_changes(
+pub async fn apply_table_design_changes(
     state: State<'_, AppState>,
     payload: TableDesignMutationPayload,
 ) -> Result<MutationResult, String> {
@@ -989,11 +1000,12 @@ pub fn apply_table_design_changes(
     state
         .mysql_service
         .apply_table_design_changes(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn create_table(
+pub async fn create_table(
     state: State<'_, AppState>,
     payload: CreateTablePayload,
 ) -> Result<MutationResult, String> {
@@ -1001,11 +1013,12 @@ pub fn create_table(
     state
         .mysql_service
         .create_table(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn get_table_ddl(
+pub async fn get_table_ddl(
     state: State<'_, AppState>,
     payload: TableIdentity,
 ) -> Result<TableDdl, String> {
@@ -1013,11 +1026,12 @@ pub fn get_table_ddl(
     state
         .mysql_service
         .get_table_ddl(&profile, &payload.database_name, &payload.table_name)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn load_table_data(
+pub async fn load_table_data(
     state: State<'_, AppState>,
     payload: LoadTableDataPayload,
 ) -> Result<TableDataPage, String> {
@@ -1025,11 +1039,12 @@ pub fn load_table_data(
     state
         .mysql_service
         .load_table_data(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn export_table_data_file(
+pub async fn export_table_data_file(
     state: State<'_, AppState>,
     payload: ExportTableDataFileRequest,
 ) -> Result<ExportDataFileResponse, String> {
@@ -1039,11 +1054,12 @@ pub fn export_table_data_file(
     state
         .mysql_service
         .export_table_data_file(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn export_table_data_sql_text(
+pub async fn export_table_data_sql_text(
     state: State<'_, AppState>,
     payload: ExportTableDataSqlTextRequest,
 ) -> Result<ExportSqlTextResponse, String> {
@@ -1053,11 +1069,12 @@ pub fn export_table_data_sql_text(
     state
         .mysql_service
         .export_table_data_sql_text(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn apply_table_data_changes(
+pub async fn apply_table_data_changes(
     state: State<'_, AppState>,
     payload: ApplyTableDataChangesPayload,
 ) -> Result<MutationResult, String> {
@@ -1065,11 +1082,12 @@ pub fn apply_table_data_changes(
     state
         .mysql_service
         .apply_table_data_changes(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn preview_table_data_changes(
+pub async fn preview_table_data_changes(
     state: State<'_, AppState>,
     payload: ApplyTableDataChangesPayload,
 ) -> Result<SqlPreview, String> {
@@ -1077,11 +1095,12 @@ pub fn preview_table_data_changes(
     state
         .mysql_service
         .preview_table_data_changes(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn execute_sql(
+pub async fn execute_sql(
     state: State<'_, AppState>,
     payload: ExecuteSqlPayload,
 ) -> Result<SqlConsoleResult, String> {
@@ -1089,11 +1108,12 @@ pub fn execute_sql(
     state
         .mysql_service
         .execute_sql(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn export_query_result_file(
+pub async fn export_query_result_file(
     state: State<'_, AppState>,
     payload: ExportQueryResultFileRequest,
 ) -> Result<ExportDataFileResponse, String> {
@@ -1103,11 +1123,12 @@ pub fn export_query_result_file(
     state
         .mysql_service
         .export_query_result_file(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 
 #[tauri::command]
-pub fn export_query_result_sql_text(
+pub async fn export_query_result_sql_text(
     state: State<'_, AppState>,
     payload: ExportQueryResultSqlTextRequest,
 ) -> Result<ExportSqlTextResponse, String> {
@@ -1117,6 +1138,7 @@ pub fn export_query_result_sql_text(
     state
         .mysql_service
         .export_query_result_sql_text(&profile, &payload)
+        .await
         .map_err(to_error_message)
 }
 

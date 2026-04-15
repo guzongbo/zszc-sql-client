@@ -16,8 +16,47 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  package-plugins:
+  discover-plugins:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.collect.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect plugin matrix
+        id: collect
+        shell: bash
+        run: |
+          matrix="$(
+            python3 - <<'PY'
+            import json
+            from pathlib import Path
+
+            plugins = []
+            for manifest in sorted(Path("plugins").glob("*/package-plugin.mjs")):
+                plugin_dir = manifest.parent.as_posix()
+                plugins.append({
+                    "plugin_name": manifest.parent.name,
+                    "plugin_dir": plugin_dir,
+                    "frontend_dir": f"{plugin_dir}/frontend",
+                    "backend_dir": f"{plugin_dir}/backend",
+                })
+
+            if not plugins:
+                raise SystemExit("未找到可打包插件")
+
+            print(json.dumps({"include": plugins}, ensure_ascii=False))
+            PY
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+
+  package-plugin:
+    needs: discover-plugins
     runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover-plugins.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -28,10 +67,8 @@ jobs:
           node-version: 20
           cache: npm
           cache-dependency-path: |
-            plugins/password-util-plugin/package-lock.json
-            plugins/password-util-plugin/frontend/package-lock.json
-            plugins/mock-id-generator-plugin/package-lock.json
-            plugins/mock-id-generator-plugin/frontend/package-lock.json
+            ${{ matrix.plugin_dir }}/package-lock.json
+            ${{ matrix.frontend_dir }}/package-lock.json
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -44,11 +81,10 @@ jobs:
       - name: Cache Rust dependencies and build outputs
         uses: Swatinem/rust-cache@v2
         with:
-          shared-key: package-plugins-${{ runner.os }}
+          shared-key: package-plugin-${{ runner.os }}-${{ matrix.plugin_name }}
           cache-workspace-crates: "true"
           workspaces: |
-            plugins/password-util-plugin/backend -> target
-            plugins/mock-id-generator-plugin/backend -> target
+            ${{ matrix.backend_dir }} -> target
 
       - name: Install Windows cross-build dependencies
         shell: bash
@@ -61,31 +97,18 @@ jobs:
           brew list lld >/dev/null 2>&1 || brew install lld
           cargo xwin --version >/dev/null 2>&1 || cargo install --locked cargo-xwin
 
-      - name: Install password-util-plugin dependencies
+      - name: Install plugin dependencies
         run: |
-          npm ci --prefix plugins/password-util-plugin
-          npm ci --prefix plugins/password-util-plugin/frontend
+          npm ci --prefix ${{ matrix.plugin_dir }}
+          npm ci --prefix ${{ matrix.frontend_dir }}
 
-      - name: Install mock-id-generator-plugin dependencies
-        run: |
-          npm ci --prefix plugins/mock-id-generator-plugin
-          npm ci --prefix plugins/mock-id-generator-plugin/frontend
+      - name: Build plugin package
+        run: npm --prefix ${{ matrix.plugin_dir }} run package:all
 
-      - name: Build plugin packages
-        run: npm run package:plugins:all
-
-      - name: Upload password-util-plugin artifact
+      - name: Upload plugin artifact
         uses: actions/upload-artifact@v4
         with:
-          name: password-util-plugin
-          path: plugins/password-util-plugin/dist/*.zszc-plugin
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload mock-id-generator-plugin artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: mock-id-generator-plugin
-          path: plugins/mock-id-generator-plugin/dist/*.zszc-plugin
+          name: ${{ matrix.plugin_name }}
+          path: ${{ matrix.plugin_dir }}/dist/*.zszc-plugin
           if-no-files-found: error
           retention-days: 7

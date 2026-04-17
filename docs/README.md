@@ -9,16 +9,18 @@
 - GitHub Actions 构建与出包说明
 - 插件体系设计与插件开发说明
 
-建议后续优先新增：
+建议后续优先维护：
 
-- `prototype-mapping.md`：原型页面与前端路由/组件映射
+- `prototype-mapping.md`：原型页面与前端路由/组件映射，当前已补充主工作区与数据传输工作区原型
 - `compare-integration.md`：结构对比、数据对比、对比记录与 Navicat 导入接入说明
 - `desktop-architecture.md`：Tauri、SQLite、本地缓存与后端协作关系
 - `sql-autocomplete-research.md`：SQL 编辑补全调研、取舍与实现说明
 - `roadmap.md`：按迭代拆解连接管理、SQL 编辑、结果集、导出等能力
 
-当前已包含的插件相关文档：
+当前已包含的重点文档：
 
+- `data-transfer-workspace.md`：数据传输内置工作区说明，覆盖节点发现、共享、断点续传与本地存储
+- `prototype-mapping.md`：Calicat 原型与前端模块映射，已包含数据传输工作区版面拆分
 - `plugin-workspace-design.md`：插件工作区设计与宿主约束
 - `plugin-development.md`：插件目录、协议、打包与安装流程
 - `plugins/README.md`：插件目录与插件说明入口

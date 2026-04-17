@@ -3,6 +3,7 @@ mod commands;
 mod compare_core;
 mod compare_service;
 mod compare_task_manager;
+mod data_transfer;
 mod local_store;
 mod models;
 mod mysql_service;
@@ -138,6 +139,19 @@ fn main() {
             commands::redis_delete_key,
             commands::redis_rename_key,
             commands::redis_set_key_ttl,
+            commands::data_transfer_get_snapshot,
+            commands::data_transfer_set_registration_enabled,
+            commands::data_transfer_refresh_discovery,
+            commands::data_transfer_update_favorite,
+            commands::data_transfer_choose_files,
+            commands::data_transfer_choose_folder,
+            commands::data_transfer_resolve_selected_files,
+            commands::data_transfer_start_direct_send,
+            commands::data_transfer_publish_files,
+            commands::data_transfer_remove_published_share,
+            commands::data_transfer_load_remote_shares,
+            commands::data_transfer_download_share,
+            commands::data_transfer_cancel_task,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build tauri application");
@@ -153,6 +167,7 @@ fn main() {
             if let Err(error) = tauri::async_runtime::block_on(state.plugin_host.stop_all()) {
                 warn!(error = %error, "failed to stop plugin runtimes before exit");
             }
+            tauri::async_runtime::block_on(state.data_transfer_service.shutdown());
         }
     });
 }

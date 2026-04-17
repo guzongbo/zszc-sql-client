@@ -1,5 +1,6 @@
 use crate::compare_service::CompareService;
 use crate::compare_task_manager::{DataCompareTaskManager, StructureCompareTaskManager};
+use crate::data_transfer::DataTransferService;
 use crate::local_store::LocalStore;
 use crate::mysql_service::MysqlService;
 use crate::plugin_host::PluginHost;
@@ -23,6 +24,7 @@ pub struct AppState {
     pub structure_compare_tasks: StructureCompareTaskManager,
     pub plugin_host: Arc<PluginHost>,
     pub runtime_metrics_service: Arc<RuntimeMetricsService>,
+    pub data_transfer_service: Arc<DataTransferService>,
 }
 
 impl AppState {
@@ -31,10 +33,13 @@ impl AppState {
         app_data_dir: PathBuf,
         local_store: LocalStore,
     ) -> Result<Self> {
+        let app_name = app_name.into();
+        let local_store = Arc::new(local_store);
+
         Ok(Self {
-            app_name: app_name.into(),
+            app_name: app_name.clone(),
             app_data_dir: app_data_dir.clone(),
-            local_store: Arc::new(local_store),
+            local_store: local_store.clone(),
             mysql_service: Arc::new(MysqlService::default()),
             redis_service: Arc::new(RedisService),
             compare_service: Arc::new(CompareService::default()),
@@ -43,6 +48,7 @@ impl AppState {
             structure_compare_tasks: StructureCompareTaskManager::default(),
             plugin_host: Arc::new(PluginHost::new(app_data_dir.clone())?),
             runtime_metrics_service: Arc::new(RuntimeMetricsService::new()?),
+            data_transfer_service: DataTransferService::new(&app_name, app_data_dir, local_store)?,
         })
     }
 }

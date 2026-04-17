@@ -12,6 +12,7 @@ type AppWindowBarProps = {
   activeWorkspaceId: string
   activeWorkspaceLabel: string
   databaseWorkspaceId: string
+  dataTransferWorkspaceId: string
   installedPlugins: InstalledPlugin[]
   onManagePlugins: () => void
   onPointerDown: React.PointerEventHandler<HTMLElement>
@@ -28,6 +29,7 @@ export function AppWindowBar({
   activeWorkspaceId,
   activeWorkspaceLabel,
   databaseWorkspaceId,
+  dataTransferWorkspaceId,
   installedPlugins,
   onManagePlugins,
   onPointerDown,
@@ -46,6 +48,7 @@ export function AppWindowBar({
           activeWorkspaceId={activeWorkspaceId}
           activeWorkspaceLabel={activeWorkspaceLabel}
           databaseWorkspaceId={databaseWorkspaceId}
+          dataTransferWorkspaceId={dataTransferWorkspaceId}
           installedPlugins={installedPlugins}
           onManagePlugins={onManagePlugins}
           onSelectWorkspace={onSelectWorkspace}

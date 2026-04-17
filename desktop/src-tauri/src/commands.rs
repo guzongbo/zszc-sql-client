@@ -1,5 +1,13 @@
 use crate::app_state::AppState;
 use crate::compare_service::{CompareExecutionControl, CompareExecutionUpdate};
+use crate::data_transfer::models::{
+    DataTransferChooseFilesResult, DataTransferChooseFolderResult, DataTransferDirectSendPayload,
+    DataTransferDownloadSharePayload, DataTransferFavoritePayload,
+    DataTransferLoadRemoteSharesPayload, DataTransferPublishPayload,
+    DataTransferRegistrationPayload, DataTransferRemoveSharePayload,
+    DataTransferResolveSelectedFilesPayload, DataTransferSelectedFile, DataTransferSnapshot,
+    DataTransferTaskCancelResponse, DataTransferTaskStartResponse,
+};
 use crate::models::{
     AppBootstrap, ApplyTableDataChangesPayload, AssignProfilesToDataSourceGroupPayload,
     AssignProfilesToDataSourceGroupResult, ChooseFilePayload, CompareDetailPageRequest,
@@ -471,6 +479,170 @@ pub fn files_choose_export_path(
     payload: Option<ChooseFilePayload>,
 ) -> Result<SaveFileDialogResult, String> {
     save_file_with_dialog(payload, &[("CSV File", &["csv"]), ("JSON File", &["json"])])
+}
+
+#[tauri::command]
+pub fn data_transfer_get_snapshot(
+    state: State<'_, AppState>,
+) -> Result<DataTransferSnapshot, String> {
+    Ok(state.data_transfer_service.snapshot())
+}
+
+#[tauri::command]
+pub async fn data_transfer_set_registration_enabled(
+    state: State<'_, AppState>,
+    payload: DataTransferRegistrationPayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .set_registration_enabled(payload.enabled)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_refresh_discovery(
+    state: State<'_, AppState>,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .refresh_discovery()
+        .await
+        .map_err(to_error_message)?;
+    Ok(state.data_transfer_service.snapshot())
+}
+
+#[tauri::command]
+pub async fn data_transfer_update_favorite(
+    state: State<'_, AppState>,
+    payload: DataTransferFavoritePayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .update_favorite(payload)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub fn data_transfer_choose_files() -> Result<DataTransferChooseFilesResult, String> {
+    let file_paths = FileDialog::new().pick_files().unwrap_or_default();
+    Ok(DataTransferChooseFilesResult {
+        canceled: file_paths.is_empty(),
+        file_paths: file_paths
+            .into_iter()
+            .map(|item| item.display().to_string())
+            .collect(),
+    })
+}
+
+#[tauri::command]
+pub fn data_transfer_choose_folder() -> Result<DataTransferChooseFolderResult, String> {
+    let directory_path = FileDialog::new()
+        .pick_folder()
+        .map(|item| item.display().to_string());
+    Ok(DataTransferChooseFolderResult {
+        canceled: directory_path.is_none(),
+        directory_path,
+    })
+}
+
+#[tauri::command]
+pub fn data_transfer_resolve_selected_files(
+    payload: DataTransferResolveSelectedFilesPayload,
+) -> Result<Vec<DataTransferSelectedFile>, String> {
+    payload
+        .file_paths
+        .into_iter()
+        .map(|file_path| {
+            let metadata = fs::metadata(&file_path)
+                .map_err(|error| format!("读取文件信息失败: {file_path} ({error})"))?;
+            let file_name = std::path::Path::new(&file_path)
+                .file_name()
+                .and_then(|value| value.to_str())
+                .map(str::to_string)
+                .unwrap_or_else(|| file_path.clone());
+
+            Ok(DataTransferSelectedFile {
+                file_path,
+                file_name,
+                size: metadata.len(),
+            })
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub async fn data_transfer_start_direct_send(
+    state: State<'_, AppState>,
+    payload: DataTransferDirectSendPayload,
+) -> Result<DataTransferTaskStartResponse, String> {
+    state
+        .data_transfer_service
+        .start_direct_send(payload)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_publish_files(
+    state: State<'_, AppState>,
+    payload: DataTransferPublishPayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .publish_files(payload)
+        .await
+        .map_err(to_error_message)?;
+    Ok(state.data_transfer_service.snapshot())
+}
+
+#[tauri::command]
+pub async fn data_transfer_remove_published_share(
+    state: State<'_, AppState>,
+    payload: DataTransferRemoveSharePayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .remove_published_share(&payload.share_id)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_load_remote_shares(
+    state: State<'_, AppState>,
+    payload: DataTransferLoadRemoteSharesPayload,
+) -> Result<crate::data_transfer::models::DataTransferRemoteShareResponse, String> {
+    state
+        .data_transfer_service
+        .load_remote_shares(payload)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_download_share(
+    state: State<'_, AppState>,
+    payload: DataTransferDownloadSharePayload,
+) -> Result<DataTransferTaskStartResponse, String> {
+    state
+        .data_transfer_service
+        .download_share(payload)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_cancel_task(
+    state: State<'_, AppState>,
+    task_id: String,
+) -> Result<DataTransferTaskCancelResponse, String> {
+    state
+        .data_transfer_service
+        .cancel_task(&task_id)
+        .await
+        .map_err(to_error_message)
 }
 
 #[tauri::command]

@@ -198,8 +198,15 @@ export type RailSection =
 
 export type WorkspacePanelKey = 'left' | 'right' | 'bottom'
 
+export type BuiltInWorkspaceOption = {
+  id: string
+  label: string
+  description: string
+}
+
 export const databaseWorkspaceId = 'workspace:database'
 export const redisWorkspaceId = 'workspace:redis'
+export const dataTransferWorkspaceId = 'workspace:data_transfer'
 
 export const defaultConnectionForm: SaveConnectionProfilePayload = {
   group_name: null,

@@ -4,6 +4,7 @@ type WorkspaceSwitcherProps = {
   activeWorkspaceId: string
   activeWorkspaceLabel: string
   databaseWorkspaceId: string
+  dataTransferWorkspaceId: string
   redisWorkspaceId: string
   installedPlugins: InstalledPlugin[]
   workspaceMenuOpen: boolean
@@ -16,6 +17,7 @@ export function WorkspaceSwitcher({
   activeWorkspaceId,
   activeWorkspaceLabel,
   databaseWorkspaceId,
+  dataTransferWorkspaceId,
   redisWorkspaceId,
   installedPlugins,
   workspaceMenuOpen,
@@ -53,6 +55,17 @@ export function WorkspaceSwitcher({
             >
               <span>MySQL客户端</span>
               <small>当前主工作区</small>
+            </button>
+            <button
+              className={`workspace-menu-item ${
+                activeWorkspaceId === dataTransferWorkspaceId ? 'active' : ''
+              }`}
+              role="menuitem"
+              type="button"
+              onClick={() => onSelectWorkspace(dataTransferWorkspaceId)}
+            >
+              <span>数据传输</span>
+              <small>内网文件传输工作区</small>
             </button>
             <button
               className={`workspace-menu-item ${

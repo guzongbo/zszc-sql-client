@@ -18,6 +18,190 @@ export type RuntimeMetrics = {
   memory_mb: number
 }
 
+export type DataTransferShareScope = 'all' | 'favorite_only' | 'selected_nodes'
+
+export type DataTransferLocalNode = {
+  alias: string
+  fingerprint: string
+  port: number
+  protocol: string
+  registration_enabled: boolean
+}
+
+export type DataTransferNode = {
+  id: string
+  alias: string
+  fingerprint: string
+  device_model: string | null
+  device_type: string
+  ip: string
+  port: number
+  protocol: string
+  favorite: boolean
+  source: string
+  last_seen_at: string
+}
+
+export type DataTransferFavoriteNode = {
+  fingerprint: string
+  alias: string
+  device_model: string | null
+  device_type: string
+  last_known_ip: string | null
+  last_known_port: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type DataTransferPublishedFile = {
+  id: string
+  file_name: string
+  relative_path: string | null
+  size: number
+  mime_type: string
+}
+
+export type DataTransferPublishedShare = {
+  id: string
+  title: string
+  scope: DataTransferShareScope
+  file_count: number
+  total_bytes: number
+  created_at: string
+  updated_at: string
+  files: DataTransferPublishedFile[]
+  allowed_fingerprints: string[]
+}
+
+export type DataTransferTaskFile = {
+  id: string
+  file_name: string
+  size: number
+  transferred_bytes: number
+  status: string
+  error_message: string | null
+}
+
+export type DataTransferTask = {
+  id: string
+  kind: string
+  direction: string
+  peer_alias: string
+  peer_fingerprint: string
+  status: string
+  total_bytes: number
+  transferred_bytes: number
+  progress_percent: number
+  current_file_name: string | null
+  started_at: string
+  updated_at: string
+  completed_at: string | null
+  error_message: string | null
+  files: DataTransferTaskFile[]
+}
+
+export type DataTransferSnapshot = {
+  local_node: DataTransferLocalNode
+  default_download_dir: string
+  nodes: DataTransferNode[]
+  favorite_nodes: DataTransferFavoriteNode[]
+  published_shares: DataTransferPublishedShare[]
+  tasks: DataTransferTask[]
+}
+
+export type DataTransferRemoteFile = {
+  id: string
+  file_name: string
+  relative_path: string | null
+  size: number
+  mime_type: string
+}
+
+export type DataTransferRemoteShare = {
+  id: string
+  owner_alias: string
+  owner_fingerprint: string
+  title: string
+  file_count: number
+  total_bytes: number
+  created_at: string
+  files: DataTransferRemoteFile[]
+}
+
+export type DataTransferRemoteShareResponse = {
+  node_id: string
+  shares: DataTransferRemoteShare[]
+}
+
+export type DataTransferTaskStartResponse = {
+  task_id: string
+}
+
+export type DataTransferTaskCancelResponse = {
+  task_id: string
+  accepted: boolean
+}
+
+export type DataTransferRegistrationPayload = {
+  enabled: boolean
+}
+
+export type DataTransferFavoritePayload = {
+  fingerprint: string
+  alias: string
+  device_model: string | null
+  device_type: string
+  last_known_ip: string | null
+  last_known_port: number | null
+  favorite: boolean
+}
+
+export type DataTransferDirectSendPayload = {
+  node_id: string
+  file_paths: string[]
+}
+
+export type DataTransferPublishPayload = {
+  file_paths: string[]
+  scope: DataTransferShareScope
+  allowed_fingerprints: string[]
+}
+
+export type DataTransferDownloadSharePayload = {
+  node_id: string
+  share_id: string
+  file_ids: string[]
+  destination_dir?: string | null
+}
+
+export type DataTransferRemoveSharePayload = {
+  share_id: string
+}
+
+export type DataTransferLoadRemoteSharesPayload = {
+  node_id: string
+}
+
+export type DataTransferChooseFilesResult = {
+  canceled: boolean
+  file_paths: string[]
+}
+
+export type DataTransferChooseFolderResult = {
+  canceled: boolean
+  directory_path: string | null
+}
+
+export type DataTransferSelectedFile = {
+  file_path: string
+  file_name: string
+  size: number
+}
+
+export type DataTransferResolveSelectedFilesPayload = {
+  file_paths: string[]
+}
+
 export type InstalledPlugin = {
   id: string
   name: string

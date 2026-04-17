@@ -6,6 +6,26 @@
 - 选中画布：`6edf7e97-138a-41e3-9993-15e0fe89a110`
 - 当前落地范围：数据库导航树、表结构编辑页、表数据编辑页、结构对比、数据对比、对比记录
 
+## 数据传输工作区原型
+
+- Calicat 文件：`2045015412770865152`
+- URL 画布节点：`2045015412783448064`
+- 实际主画板：`73840ea1-78bb-4e34-9461-4b8bd831ebd6`
+- 当前落地范围：数据传输内置工作区整体布局、侧栏分区、顶部工具栏、指标卡片、任务面板、共享面板、收藏节点预览卡、历史表格
+
+### 数据传输页面拆分
+
+| 原型区域 | 前端模块 | 桌面端命令 | 说明 |
+| --- | --- | --- | --- |
+| 左侧品牌与状态侧栏 | `DataTransferWorkspace` / `WorkspaceSection` | `data_transfer_get_snapshot` `data_transfer_set_registration_enabled` | 展示本机节点、注册开关、在线状态与分区导航 |
+| 顶部工具栏 | `data-transfer-toolbar-card` | `data_transfer_refresh_discovery` `data_transfer_choose_files` | 承载页面标题、网络摘要与高频动作入口 |
+| 指标卡片区 | `MetricCard` | `data_transfer_get_snapshot` | 汇总在线节点、收藏节点、共享数、运行中任务等信息 |
+| 工作台任务区 | `TaskCard` / `renderDashboard` | `data_transfer_cancel_task` | 展示当前任务、进度条、方向、错误信息与快捷跳转 |
+| 节点管理区 | `renderNodes` | `data_transfer_update_favorite` `data_transfer_load_remote_shares` | 查看在线节点、收藏、加载远端共享并切换发送目标 |
+| 文件传输区 | `renderTransfer` | `data_transfer_start_direct_send` `data_transfer_publish_files` `data_transfer_download_share` `data_transfer_choose_folder` | 直传、共享发布、远端共享浏览与下载目录设置 |
+| 传输历史区 | `renderHistory` / `renderHistoryCard` | `data_transfer_get_snapshot` | 以表格方式展示任务历史、节点、时间和状态 |
+| 收藏节点预览卡 | `renderFavoritesCard` | `data_transfer_update_favorite` | 在工作台与节点管理侧栏展示收藏节点预览，并统一跳转到节点管理维护 |
+
 ## 页面拆分
 
 | 原型区域 | 前端模块 | 桌面端命令 | 说明 |

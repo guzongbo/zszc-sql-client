@@ -1,3 +1,4 @@
+use crate::data_transfer::models::DataTransferFavoriteNode;
 use crate::models::{
     AssignProfilesToDataSourceGroupResult, CompareHistoryInput, CompareHistoryItem,
     CompareHistoryPerformance, CompareHistorySummary, CompareHistoryType, ConnectionProfile,
@@ -9,6 +10,7 @@ use crate::navicat::NavicatConnectionCandidate;
 use anyhow::{Context, Result, ensure};
 use chrono::Utc;
 use rusqlite::{Connection, OptionalExtension, params};
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -17,6 +19,42 @@ use uuid::Uuid;
 #[derive(Debug, Clone)]
 pub struct LocalStore {
     database_path: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataTransferPublishedFileRecord {
+    pub id: String,
+    pub file_name: String,
+    pub relative_path: Option<String>,
+    pub size: u64,
+    pub mime_type: String,
+    pub local_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataTransferPublishedShareRecord {
+    pub id: String,
+    pub title: String,
+    pub scope: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    pub created_at: String,
+    pub updated_at: String,
+    pub files: Vec<DataTransferPublishedFileRecord>,
+    pub allowed_fingerprints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DataTransferPartialRecord {
+    pub transfer_kind: String,
+    pub peer_fingerprint: String,
+    pub resource_id: String,
+    pub file_name: String,
+    pub temp_path: String,
+    pub final_path: String,
+    pub total_bytes: u64,
+    pub created_at: String,
+    pub updated_at: String,
 }
 
 impl LocalStore {
@@ -94,6 +132,330 @@ impl LocalStore {
 
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .context("读取数据源分组失败")
+    }
+
+    pub fn data_transfer_registration_enabled(&self) -> Result<bool> {
+        let connection = self.open_connection()?;
+        let value = load_app_meta_value(&connection, "data_transfer_registration_enabled")?
+            .unwrap_or_else(|| "true".to_string());
+        Ok(value != "false")
+    }
+
+    pub fn set_data_transfer_registration_enabled(&self, enabled: bool) -> Result<()> {
+        let connection = self.open_connection()?;
+        upsert_app_meta_value(
+            &connection,
+            "data_transfer_registration_enabled",
+            if enabled { "true" } else { "false" },
+        )
+    }
+
+    pub fn get_or_create_data_transfer_fingerprint(&self) -> Result<String> {
+        let connection = self.open_connection()?;
+        if let Some(value) = load_app_meta_value(&connection, "data_transfer_fingerprint")? {
+            return Ok(value);
+        }
+
+        let fingerprint = Uuid::new_v4().to_string();
+        upsert_app_meta_value(&connection, "data_transfer_fingerprint", &fingerprint)?;
+        Ok(fingerprint)
+    }
+
+    pub fn list_data_transfer_favorites(&self) -> Result<Vec<DataTransferFavoriteNode>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                fingerprint,
+                alias,
+                device_model,
+                device_type,
+                last_known_ip,
+                last_known_port,
+                created_at,
+                updated_at
+            FROM data_transfer_favorites
+            ORDER BY alias, created_at
+            ",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            Ok(DataTransferFavoriteNode {
+                fingerprint: row.get(0)?,
+                alias: row.get(1)?,
+                device_model: row.get(2)?,
+                device_type: row.get(3)?,
+                last_known_ip: row.get(4)?,
+                last_known_port: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("读取数据传输收藏节点失败")
+    }
+
+    pub fn upsert_data_transfer_favorite(&self, payload: DataTransferFavoriteNode) -> Result<()> {
+        let connection = self.open_connection()?;
+        let existing = connection
+            .query_row(
+                "
+                SELECT created_at
+                FROM data_transfer_favorites
+                WHERE fingerprint = ?
+                ",
+                [&payload.fingerprint],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let created_at = existing.unwrap_or_else(|| payload.created_at.clone());
+
+        connection.execute(
+            "
+            INSERT INTO data_transfer_favorites (
+                fingerprint,
+                alias,
+                device_model,
+                device_type,
+                last_known_ip,
+                last_known_port,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(fingerprint) DO UPDATE SET
+                alias = excluded.alias,
+                device_model = excluded.device_model,
+                device_type = excluded.device_type,
+                last_known_ip = excluded.last_known_ip,
+                last_known_port = excluded.last_known_port,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                payload.fingerprint,
+                payload.alias,
+                payload.device_model,
+                payload.device_type,
+                payload.last_known_ip,
+                payload.last_known_port.map(i64::from),
+                created_at,
+                payload.updated_at,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn delete_data_transfer_favorite(&self, fingerprint: &str) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "DELETE FROM data_transfer_favorites WHERE fingerprint = ?",
+            [fingerprint],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_data_transfer_published_shares(
+        &self,
+    ) -> Result<Vec<DataTransferPublishedShareRecord>> {
+        let connection = self.open_connection()?;
+        let mut statement = connection.prepare(
+            "
+            SELECT
+                id,
+                title,
+                scope,
+                file_count,
+                total_bytes,
+                files_json,
+                allowed_fingerprints_json,
+                created_at,
+                updated_at
+            FROM data_transfer_published_shares
+            ORDER BY created_at DESC
+            ",
+        )?;
+
+        let rows = statement.query_map([], |row| {
+            let files_json = row.get::<_, String>(5)?;
+            let allowed_json = row.get::<_, String>(6)?;
+            let files = parse_json_value::<Vec<DataTransferPublishedFileRecord>>(&files_json);
+            let allowed_fingerprints = parse_json_value::<Vec<String>>(&allowed_json);
+            Ok(DataTransferPublishedShareRecord {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                scope: row.get(2)?,
+                file_count: row.get::<_, i64>(3)? as u64,
+                total_bytes: row.get::<_, i64>(4)? as u64,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+                files,
+                allowed_fingerprints,
+            })
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("读取数据传输共享文件失败")
+    }
+
+    pub fn save_data_transfer_published_share(
+        &self,
+        payload: &DataTransferPublishedShareRecord,
+    ) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "
+            INSERT INTO data_transfer_published_shares (
+                id,
+                title,
+                scope,
+                file_count,
+                total_bytes,
+                files_json,
+                allowed_fingerprints_json,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                title = excluded.title,
+                scope = excluded.scope,
+                file_count = excluded.file_count,
+                total_bytes = excluded.total_bytes,
+                files_json = excluded.files_json,
+                allowed_fingerprints_json = excluded.allowed_fingerprints_json,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                payload.id,
+                payload.title,
+                payload.scope,
+                payload.file_count as i64,
+                payload.total_bytes as i64,
+                stringify_json_value(&payload.files),
+                stringify_json_value(&payload.allowed_fingerprints),
+                payload.created_at,
+                payload.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_data_transfer_published_share(&self, share_id: &str) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "DELETE FROM data_transfer_published_shares WHERE id = ?",
+            [share_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn load_data_transfer_partial(
+        &self,
+        transfer_kind: &str,
+        peer_fingerprint: &str,
+        resource_id: &str,
+    ) -> Result<Option<DataTransferPartialRecord>> {
+        let connection = self.open_connection()?;
+        connection
+            .query_row(
+                "
+                SELECT
+                    transfer_kind,
+                    peer_fingerprint,
+                    resource_id,
+                    file_name,
+                    temp_path,
+                    final_path,
+                    total_bytes,
+                    created_at,
+                    updated_at
+                FROM data_transfer_partial_transfers
+                WHERE transfer_kind = ?
+                  AND peer_fingerprint = ?
+                  AND resource_id = ?
+                ",
+                params![transfer_kind, peer_fingerprint, resource_id],
+                |row| {
+                    Ok(DataTransferPartialRecord {
+                        transfer_kind: row.get(0)?,
+                        peer_fingerprint: row.get(1)?,
+                        resource_id: row.get(2)?,
+                        file_name: row.get(3)?,
+                        temp_path: row.get(4)?,
+                        final_path: row.get(5)?,
+                        total_bytes: row.get::<_, i64>(6)? as u64,
+                        created_at: row.get(7)?,
+                        updated_at: row.get(8)?,
+                    })
+                },
+            )
+            .optional()
+            .context("读取断点续传元数据失败")
+    }
+
+    pub fn upsert_data_transfer_partial(&self, payload: DataTransferPartialRecord) -> Result<()> {
+        let connection = self.open_connection()?;
+        let existing = self.load_data_transfer_partial(
+            &payload.transfer_kind,
+            &payload.peer_fingerprint,
+            &payload.resource_id,
+        )?;
+        let created_at = existing
+            .map(|item| item.created_at)
+            .unwrap_or_else(|| payload.created_at.clone());
+
+        connection.execute(
+            "
+            INSERT INTO data_transfer_partial_transfers (
+                transfer_kind,
+                peer_fingerprint,
+                resource_id,
+                file_name,
+                temp_path,
+                final_path,
+                total_bytes,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(transfer_kind, peer_fingerprint, resource_id) DO UPDATE SET
+                file_name = excluded.file_name,
+                temp_path = excluded.temp_path,
+                final_path = excluded.final_path,
+                total_bytes = excluded.total_bytes,
+                updated_at = excluded.updated_at
+            ",
+            params![
+                payload.transfer_kind,
+                payload.peer_fingerprint,
+                payload.resource_id,
+                payload.file_name,
+                payload.temp_path,
+                payload.final_path,
+                payload.total_bytes as i64,
+                created_at,
+                payload.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_data_transfer_partial(
+        &self,
+        transfer_kind: &str,
+        peer_fingerprint: &str,
+        resource_id: &str,
+    ) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "
+            DELETE FROM data_transfer_partial_transfers
+            WHERE transfer_kind = ?
+              AND peer_fingerprint = ?
+              AND resource_id = ?
+            ",
+            params![transfer_kind, peer_fingerprint, resource_id],
+        )?;
+        Ok(())
     }
 
     pub fn list_redis_connection_profiles(&self) -> Result<Vec<RedisConnectionProfile>> {
@@ -337,7 +699,8 @@ impl LocalStore {
         skipped_items: Vec<SkippedImportItem>,
         file_path: Option<String>,
     ) -> Result<ImportConnectionProfilesResult> {
-        let connection = self.open_connection()?;
+        let mut connection = self.open_connection()?;
+        let transaction = connection.transaction()?;
         let mut imported_items = Vec::new();
         let mut created_count = 0_usize;
         let mut updated_count = 0_usize;
@@ -346,7 +709,7 @@ impl LocalStore {
         for item in dedupe_import_candidates(items) {
             validate_import_candidate(&item)?;
 
-            let existing = connection
+            let existing = transaction
                 .query_row(
                     "
                     SELECT id, group_name, password
@@ -387,10 +750,11 @@ impl LocalStore {
                     let normalized = value.trim().to_string();
                     (!normalized.is_empty()).then_some(normalized)
                 });
-            ensure_data_source_group(&connection, group_name.as_deref())?;
+            // 批量导入统一放在同一事务中，避免中途失败后留下半导入状态。
+            ensure_data_source_group(&transaction, group_name.as_deref())?;
 
             if let Some((profile_id, _, _)) = existing {
-                connection.execute(
+                transaction.execute(
                     "
                     UPDATE connection_profiles
                     SET group_name = ?, data_source_name = ?, host = ?, port = ?, username = ?,
@@ -417,7 +781,7 @@ impl LocalStore {
                 updated_count += 1;
             } else {
                 let profile_id = Uuid::new_v4().to_string();
-                connection.execute(
+                transaction.execute(
                     "
                     INSERT INTO connection_profiles (
                         id,
@@ -452,6 +816,8 @@ impl LocalStore {
                 created_count += 1;
             }
         }
+
+        transaction.commit()?;
 
         Ok(ImportConnectionProfilesResult {
             canceled: false,
@@ -848,6 +1214,7 @@ impl LocalStore {
         // 分组表依赖连接表里的 group_name，必须在各连接表迁移完成后再做回填。
         self.migrate_data_source_groups(&connection)?;
         self.migrate_compare_history(&connection)?;
+        self.migrate_data_transfer_workspace(&connection)?;
         Ok(())
     }
 
@@ -869,6 +1236,8 @@ impl LocalStore {
 
                 CREATE INDEX idx_connection_profiles_group_name
                     ON connection_profiles(group_name, data_source_name);
+                CREATE INDEX idx_connection_profiles_data_source_name
+                    ON connection_profiles(data_source_name);
                 ",
             )?;
             return Ok(());
@@ -885,6 +1254,8 @@ impl LocalStore {
                 "
                 CREATE INDEX IF NOT EXISTS idx_connection_profiles_group_name
                     ON connection_profiles(group_name, data_source_name);
+                CREATE INDEX IF NOT EXISTS idx_connection_profiles_data_source_name
+                    ON connection_profiles(data_source_name);
                 ",
             )?;
             return Ok(());
@@ -967,6 +1338,8 @@ impl LocalStore {
             ALTER TABLE connection_profiles_next RENAME TO connection_profiles;
             CREATE INDEX idx_connection_profiles_group_name
                 ON connection_profiles(group_name, data_source_name);
+            CREATE INDEX idx_connection_profiles_data_source_name
+                ON connection_profiles(data_source_name);
             ",
         )?;
 
@@ -1192,6 +1565,55 @@ impl LocalStore {
                 ON compare_history(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_compare_history_type_created_at
                 ON compare_history(history_type, created_at DESC);
+            ",
+        )?;
+
+        Ok(())
+    }
+
+    fn migrate_data_transfer_workspace(&self, connection: &Connection) -> Result<()> {
+        connection.execute_batch(
+            "
+            CREATE TABLE IF NOT EXISTS data_transfer_favorites (
+                fingerprint TEXT PRIMARY KEY,
+                alias TEXT NOT NULL,
+                device_model TEXT,
+                device_type TEXT NOT NULL,
+                last_known_ip TEXT,
+                last_known_port INTEGER,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS data_transfer_published_shares (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL,
+                scope TEXT NOT NULL,
+                file_count INTEGER NOT NULL,
+                total_bytes INTEGER NOT NULL,
+                files_json TEXT NOT NULL,
+                allowed_fingerprints_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS data_transfer_partial_transfers (
+                transfer_kind TEXT NOT NULL,
+                peer_fingerprint TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                temp_path TEXT NOT NULL,
+                final_path TEXT NOT NULL,
+                total_bytes INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (transfer_kind, peer_fingerprint, resource_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_data_transfer_favorites_alias
+                ON data_transfer_favorites(alias);
+            CREATE INDEX IF NOT EXISTS idx_data_transfer_partial_updated_at
+                ON data_transfer_partial_transfers(updated_at DESC);
             ",
         )?;
 
@@ -1493,6 +1915,40 @@ fn normalize_history_type(value: &str) -> CompareHistoryType {
     }
 }
 
+fn load_app_meta_value(connection: &Connection, key: &str) -> Result<Option<String>> {
+    connection
+        .query_row(
+            "
+            SELECT value
+            FROM app_meta
+            WHERE key = ?
+            ",
+            [key],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .context("读取应用元数据失败")
+}
+
+fn stringify_json_value<T>(value: &T) -> String
+where
+    T: Serialize,
+{
+    serde_json::to_string(value).unwrap_or_else(|_| "[]".to_string())
+}
+
+fn upsert_app_meta_value(connection: &Connection, key: &str, value: &str) -> Result<()> {
+    connection.execute(
+        "
+        INSERT INTO app_meta (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+        ",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
 fn parse_json_value<T>(raw: &str) -> T
 where
     T: serde::de::DeserializeOwned + Default,
@@ -1503,6 +1959,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::{LocalStore, load_table_columns};
+    use crate::navicat::NavicatConnectionCandidate;
     use anyhow::Result;
     use rusqlite::Connection;
     use std::fs;
@@ -1601,6 +2058,66 @@ mod tests {
         let groups = store.list_data_source_groups()?;
         assert!(groups.is_empty());
 
+        Ok(())
+    }
+
+    #[test]
+    fn import_connection_profiles_rolls_back_when_a_candidate_is_invalid() -> Result<()> {
+        let test_dir = TestDir::new()?;
+        let database_path = test_dir.database_path();
+        let store = LocalStore::new(&database_path)?;
+
+        let result = store.import_connection_profiles(
+            vec![
+                NavicatConnectionCandidate {
+                    data_source_name: "开发 MySQL".to_string(),
+                    host: "127.0.0.1".to_string(),
+                    port: 3306,
+                    username: "root".to_string(),
+                    password: "secret".to_string(),
+                    group_name: Some("开发环境".to_string()),
+                },
+                NavicatConnectionCandidate {
+                    data_source_name: "异常配置".to_string(),
+                    host: String::new(),
+                    port: 3306,
+                    username: "root".to_string(),
+                    password: "secret".to_string(),
+                    group_name: None,
+                },
+            ],
+            vec![],
+            None,
+        );
+
+        assert!(result.is_err());
+        assert!(store.list_connection_profiles()?.is_empty());
+        assert!(store.list_data_source_groups()?.is_empty());
+
+        Ok(())
+    }
+
+    #[test]
+    fn initialize_creates_connection_profile_lookup_index() -> Result<()> {
+        let test_dir = TestDir::new()?;
+        let database_path = test_dir.database_path();
+        let _store = LocalStore::new(&database_path)?;
+        let connection = Connection::open(&database_path)?;
+
+        let exists = connection.query_row(
+            "
+            SELECT EXISTS(
+                SELECT 1
+                FROM sqlite_master
+                WHERE type = 'index'
+                  AND name = 'idx_connection_profiles_data_source_name'
+            )
+            ",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+
+        assert_eq!(exists, 1);
         Ok(())
     }
 }

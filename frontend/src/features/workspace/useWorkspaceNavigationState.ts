@@ -28,6 +28,19 @@ type UseWorkspaceNavigationStateOptions = {
 }
 
 type ProfileConnectionStatus = 'idle' | 'connected' | 'error'
+type SqlAutocompleteCacheEntry = {
+  schema: SqlAutocompleteSchema
+  loaded_at: number
+}
+
+const SQL_AUTOCOMPLETE_CACHE_TTL_MS = 5 * 60 * 1000
+
+function isSqlAutocompleteCacheFresh(
+  entry: SqlAutocompleteCacheEntry,
+  now = Date.now(),
+) {
+  return now - entry.loaded_at <= SQL_AUTOCOMPLETE_CACHE_TTL_MS
+}
 
 export function useWorkspaceNavigationState({
   dataSourceGroups,
@@ -42,8 +55,8 @@ export function useWorkspaceNavigationState({
     {},
   )
   const [tablesByDatabase, setTablesByDatabase] = useState<Record<string, TableEntry[]>>({})
-  const [sqlAutocompleteByDatabase, setSqlAutocompleteByDatabase] = useState<
-    Record<string, SqlAutocompleteSchema>
+  const [sqlAutocompleteCacheByDatabase, setSqlAutocompleteCacheByDatabase] = useState<
+    Record<string, SqlAutocompleteCacheEntry>
   >({})
   const [nodeLoading, setNodeLoading] = useState<Record<string, boolean>>({})
   const [profileConnectionState, setProfileConnectionState] = useState<
@@ -55,6 +68,16 @@ export function useWorkspaceNavigationState({
   const tableLoadRequestsRef = useRef<Partial<Record<string, Promise<TableEntry[]>>>>({})
   const deferredNavigationSearchText = useDeferredValue(navigationSearchText)
   const normalizedNavigationSearchText = deferredNavigationSearchText.trim().toLowerCase()
+  const sqlAutocompleteByDatabase = useMemo(
+    () =>
+      Object.fromEntries(
+        Object.entries(sqlAutocompleteCacheByDatabase).map(([key, entry]) => [
+          key,
+          entry.schema,
+        ]),
+      ),
+    [sqlAutocompleteCacheByDatabase],
+  )
   const ensureTablesLoadedEvent = useEffectEvent(
     (profileId: string, databaseName: string) =>
       ensureTablesLoaded(profileId, databaseName),
@@ -169,6 +192,27 @@ export function useWorkspaceNavigationState({
     tablesByDatabase,
   ])
 
+  useEffect(() => {
+    const timer = globalThis.setInterval(() => {
+      setSqlAutocompleteCacheByDatabase((previous) => {
+        const now = Date.now()
+        const next = Object.fromEntries(
+          Object.entries(previous).filter(([, entry]) =>
+            isSqlAutocompleteCacheFresh(entry, now),
+          ),
+        )
+
+        return Object.keys(next).length === Object.keys(previous).length
+          ? previous
+          : next
+      })
+    }, SQL_AUTOCOMPLETE_CACHE_TTL_MS)
+
+    return () => {
+      globalThis.clearInterval(timer)
+    }
+  }, [])
+
   function clearExpandedKeys() {
     setExpandedKeys(new Set())
   }
@@ -272,11 +316,39 @@ export function useWorkspaceNavigationState({
     options?: { force?: boolean; silent?: boolean },
   ) {
     const databaseKey = buildDatabaseKey(profileId, databaseName)
-    if (!options?.force && sqlAutocompleteByDatabase[databaseKey]) {
-      return sqlAutocompleteByDatabase[databaseKey]
+    const cachedEntry = sqlAutocompleteCacheByDatabase[databaseKey]
+    if (!options?.force && cachedEntry && isSqlAutocompleteCacheFresh(cachedEntry)) {
+      return cachedEntry.schema
     }
 
-    if (!options?.force && sqlAutocompleteRequestsRef.current[databaseKey]) {
+    if (!options?.force && cachedEntry) {
+      if (!sqlAutocompleteRequestsRef.current[databaseKey]) {
+        sqlAutocompleteRequestsRef.current[databaseKey] = (async () => {
+          try {
+            const schema = await loadSqlAutocomplete({
+              profile_id: profileId,
+              database_name: databaseName,
+            })
+            setSqlAutocompleteCacheByDatabase((previous) => ({
+              ...previous,
+              [databaseKey]: {
+                schema,
+                loaded_at: Date.now(),
+              },
+            }))
+            return schema
+          } catch {
+            return null
+          } finally {
+            delete sqlAutocompleteRequestsRef.current[databaseKey]
+          }
+        })()
+      }
+
+      return cachedEntry.schema
+    }
+
+    if (sqlAutocompleteRequestsRef.current[databaseKey]) {
       return sqlAutocompleteRequestsRef.current[databaseKey]
     }
 
@@ -286,9 +358,12 @@ export function useWorkspaceNavigationState({
           profile_id: profileId,
           database_name: databaseName,
         })
-        setSqlAutocompleteByDatabase((previous) => ({
+        setSqlAutocompleteCacheByDatabase((previous) => ({
           ...previous,
-          [databaseKey]: schema,
+          [databaseKey]: {
+            schema,
+            loaded_at: Date.now(),
+          },
         }))
         return schema
       } catch (error) {
@@ -310,7 +385,7 @@ export function useWorkspaceNavigationState({
   function clearSqlAutocompleteCache(profileId: string, databaseName?: string) {
     if (databaseName) {
       const databaseKey = buildDatabaseKey(profileId, databaseName)
-      setSqlAutocompleteByDatabase((previous) => {
+      setSqlAutocompleteCacheByDatabase((previous) => {
         const next = { ...previous }
         delete next[databaseKey]
         return next
@@ -319,7 +394,7 @@ export function useWorkspaceNavigationState({
       return
     }
 
-    setSqlAutocompleteByDatabase((previous) =>
+    setSqlAutocompleteCacheByDatabase((previous) =>
       Object.fromEntries(
         Object.entries(previous).filter(([key]) => !key.startsWith(`${profileId}:`)),
       ),
@@ -331,17 +406,37 @@ export function useWorkspaceNavigationState({
     })
   }
 
+  function clearTablesCache(profileId: string, databaseName?: string) {
+    if (databaseName) {
+      const databaseKey = buildDatabaseKey(profileId, databaseName)
+      setTablesByDatabase((previous) => {
+        const next = { ...previous }
+        delete next[databaseKey]
+        return next
+      })
+      delete tableLoadRequestsRef.current[databaseKey]
+      return
+    }
+
+    setTablesByDatabase((previous) =>
+      Object.fromEntries(
+        Object.entries(previous).filter(([key]) => !key.startsWith(`${profileId}:`)),
+      ),
+    )
+    Object.keys(tableLoadRequestsRef.current).forEach((key) => {
+      if (key.startsWith(`${profileId}:`)) {
+        delete tableLoadRequestsRef.current[key]
+      }
+    })
+  }
+
   function clearProfileCaches(profileId: string) {
     setDatabasesByProfile((previous) => {
       const next = { ...previous }
       delete next[profileId]
       return next
     })
-    setTablesByDatabase((previous) =>
-      Object.fromEntries(
-        Object.entries(previous).filter(([key]) => !key.startsWith(`${profileId}:`)),
-      ),
-    )
+    clearTablesCache(profileId)
     setProfileConnectionState((previous) => {
       const next = { ...previous }
       delete next[profileId]
@@ -385,6 +480,7 @@ export function useWorkspaceNavigationState({
 
   return {
     clearExpandedKeys,
+    clearTablesCache,
     clearProfileCaches,
     clearSqlAutocompleteCache,
     databasesByProfile,

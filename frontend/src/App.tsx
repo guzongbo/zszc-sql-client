@@ -16,6 +16,7 @@ import {
   uninstallPlugin,
 } from './api'
 import {
+  dataTransferWorkspaceId,
   databaseWorkspaceId,
   type ConfirmDialogState,
   type OutputLogEntry,
@@ -92,6 +93,12 @@ const RedisWorkspace = lazy(() =>
   })),
 )
 
+const DataTransferWorkspace = lazy(() =>
+  import('./features/data-transfer/DataTransferWorkspace').then((module) => ({
+    default: module.DataTransferWorkspace,
+  })),
+)
+
 function App() {
   const [, setBootstrap] = useState<AppBootstrap | null>(null)
   const [bootstrapError, setBootstrapError] = useState('')
@@ -133,6 +140,7 @@ function App() {
   })
   const {
     clearExpandedKeys,
+    clearTablesCache,
     clearProfileCaches,
     clearSqlAutocompleteCache,
     databasesByProfile,
@@ -313,7 +321,9 @@ function App() {
   } = useTableWorkspaceDomain({
     activeTab,
     appendOutputLog,
+    clearProfileCaches,
     clearSqlAutocompleteCache,
+    clearTablesCache,
     databasesByProfile,
     ensureDatabasesLoaded,
     ensureSqlAutocompleteLoaded,
@@ -391,7 +401,11 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (activeWorkspaceId === databaseWorkspaceId || activeWorkspaceId === redisWorkspaceId) {
+    if (
+      activeWorkspaceId === databaseWorkspaceId ||
+      activeWorkspaceId === redisWorkspaceId ||
+      activeWorkspaceId === dataTransferWorkspaceId
+    ) {
       return
     }
 
@@ -536,6 +550,7 @@ function App() {
   const workspaceOptions = useMemo(
     () => [
       { id: databaseWorkspaceId, label: 'MySQL客户端' },
+      { id: dataTransferWorkspaceId, label: '数据传输' },
       { id: redisWorkspaceId, label: 'Redis客户端' },
       ...installedPlugins.map((plugin) => ({
         id: `plugin:${plugin.id}`,
@@ -626,6 +641,7 @@ function App() {
           activeWorkspaceId={activeWorkspaceId}
           activeWorkspaceLabel={activeWorkspaceLabel}
           databaseWorkspaceId={databaseWorkspaceId}
+          dataTransferWorkspaceId={dataTransferWorkspaceId}
           installedPlugins={installedPlugins}
           onManagePlugins={handleOpenPluginManager}
           onPointerDown={handleWindowBarPointerDown}
@@ -641,6 +657,19 @@ function App() {
         {activePlugin ? (
           <section className="plugin-full-pane">
             <PluginWorkspace plugin={activePlugin} />
+          </section>
+        ) : activeWorkspaceId === dataTransferWorkspaceId ? (
+          <section className="data-transfer-full-pane">
+            <Suspense
+              fallback={
+                <WorkspaceLoadingState
+                  title="数据传输工作区准备中"
+                  text="正在挂载内网文件传输工作区。"
+                />
+              }
+            >
+              <DataTransferWorkspace />
+            </Suspense>
           </section>
         ) : activeWorkspaceId === redisWorkspaceId ? (
           <section className="redis-full-pane">

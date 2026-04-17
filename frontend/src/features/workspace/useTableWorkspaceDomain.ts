@@ -56,6 +56,89 @@ import {
   stripDraftColumn,
 } from './appHelpers'
 
+type SqlMetadataImpact = {
+  refresh_profile_databases: boolean
+  refresh_table_metadata: boolean
+  affected_databases: string[]
+}
+
+const TABLE_METADATA_MUTATION_PATTERN =
+  /\b(?:CREATE|ALTER|DROP|RENAME|TRUNCATE)\s+(?:TABLE|VIEW)\b/i
+const DATABASE_METADATA_MUTATION_PATTERN = /\b(?:CREATE|ALTER|DROP)\s+(?:DATABASE|SCHEMA)\b/i
+
+function normalizeSqlIdentifierToken(token: string) {
+  return token.replaceAll('`', '').trim()
+}
+
+function stripSqlComments(sqlText: string) {
+  return sqlText
+    .replaceAll(/\/\*[\s\S]*?\*\//g, ' ')
+    .replaceAll(/--.*$/gm, ' ')
+    .replaceAll(/#[^\n]*$/gm, ' ')
+}
+
+function extractReferencedDatabaseNames(sqlText: string) {
+  const names = new Set<string>()
+  const matches = sqlText.matchAll(
+    /(?:`([^`]+)`|([A-Za-z_][\w$]*))\s*\.\s*(?:(?:`[^`]+`|[A-Za-z_][\w$]*|\*)?)/g,
+  )
+
+  for (const match of matches) {
+    const databaseName = match[1] ?? match[2]
+    if (databaseName) {
+      names.add(databaseName)
+    }
+  }
+
+  return Array.from(names)
+}
+
+function extractDatabaseMutationNames(sqlText: string) {
+  const names = new Set<string>()
+  const matches = sqlText.matchAll(
+    /\b(?:CREATE|ALTER|DROP)\s+(?:DATABASE|SCHEMA)\s+(?:IF\s+(?:NOT\s+)?EXISTS\s+)?(`[^`]+`|[A-Za-z_][\w$]*)/gi,
+  )
+
+  for (const match of matches) {
+    const databaseName = match[1]
+    if (databaseName) {
+      names.add(normalizeSqlIdentifierToken(databaseName))
+    }
+  }
+
+  return Array.from(names)
+}
+
+function analyzeSqlMetadataImpact(
+  sqlText: string,
+  databaseName: string | null,
+): SqlMetadataImpact | null {
+  const sanitizedSql = stripSqlComments(sqlText)
+  const refreshProfileDatabases = DATABASE_METADATA_MUTATION_PATTERN.test(sanitizedSql)
+  const refreshTableMetadata = TABLE_METADATA_MUTATION_PATTERN.test(sanitizedSql)
+
+  if (!refreshProfileDatabases && !refreshTableMetadata) {
+    return null
+  }
+
+  const affectedDatabases = new Set<string>()
+  extractReferencedDatabaseNames(sanitizedSql).forEach((name) => {
+    affectedDatabases.add(normalizeSqlIdentifierToken(name))
+  })
+  extractDatabaseMutationNames(sanitizedSql).forEach((name) => {
+    affectedDatabases.add(name)
+  })
+  if (refreshTableMetadata && databaseName) {
+    affectedDatabases.add(databaseName)
+  }
+
+  return {
+    refresh_profile_databases: refreshProfileDatabases,
+    refresh_table_metadata: refreshTableMetadata,
+    affected_databases: Array.from(affectedDatabases),
+  }
+}
+
 type UseTableWorkspaceDomainOptions = {
   activeTab: WorkspaceTab | null
   appendOutputLog: (
@@ -64,7 +147,9 @@ type UseTableWorkspaceDomainOptions = {
     tone?: ToastTone,
     sql?: string,
   ) => void
+  clearProfileCaches: (profileId: string) => void
   clearSqlAutocompleteCache: (profileId: string, databaseName?: string) => void
+  clearTablesCache: (profileId: string, databaseName?: string) => void
   databasesByProfile: Record<string, DatabaseEntry[]>
   ensureDatabasesLoaded: (
     profileId: string,
@@ -93,7 +178,9 @@ type UseTableWorkspaceDomainOptions = {
 export function useTableWorkspaceDomain({
   activeTab,
   appendOutputLog,
+  clearProfileCaches,
   clearSqlAutocompleteCache,
+  clearTablesCache,
   databasesByProfile,
   ensureDatabasesLoaded,
   ensureSqlAutocompleteLoaded,
@@ -110,6 +197,34 @@ export function useTableWorkspaceDomain({
   const [ddlDialog, setDdlDialog] = useState<{ title: string; ddl: string } | null>(null)
   const [sqlPreview, setSqlPreview] = useState<SqlPreviewState | null>(null)
   const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null)
+
+  function refreshMetadataCachesAfterSqlMutation(
+    profileId: string,
+    databaseName: string | null,
+    executedSql: string,
+  ) {
+    const impact = analyzeSqlMetadataImpact(executedSql, databaseName)
+    if (!impact) {
+      return
+    }
+
+    if (impact.refresh_profile_databases) {
+      clearProfileCaches(profileId)
+      void ensureDatabasesLoaded(profileId, { force: true, silent: true })
+    }
+
+    if (impact.refresh_table_metadata) {
+      impact.affected_databases.forEach((affectedDatabaseName) => {
+        clearTablesCache(profileId, affectedDatabaseName)
+        clearSqlAutocompleteCache(profileId, affectedDatabaseName)
+        void ensureTablesLoaded(profileId, affectedDatabaseName, { force: true })
+        void ensureSqlAutocompleteLoaded(profileId, affectedDatabaseName, {
+          force: true,
+          silent: true,
+        })
+      })
+    }
+  }
 
   useEffect(() => {
     setTabs((previous) => {
@@ -1533,6 +1648,15 @@ export function useTableWorkspaceDomain({
             }
           : currentTab,
       )
+
+      if (result.result_kind === 'mutation') {
+        // 控制台执行 DDL 后，主动失效相关缓存，避免树和补全长期停留在旧 schema。
+        refreshMetadataCachesAfterSqlMutation(
+          tab.profile_id,
+          tab.database_name,
+          result.executed_sql,
+        )
+      }
 
       appendOutputLog(
         tab.database_name ?? 'console',

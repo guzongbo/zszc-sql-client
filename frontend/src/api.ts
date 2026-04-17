@@ -1,4 +1,5 @@
 import { mockApi } from './mockData'
+import { dataTransferMockApi } from './features/data-transfer/mockApi'
 import type {
   AssignProfilesToDataSourceGroupPayload,
   AssignProfilesToDataSourceGroupResult,
@@ -23,6 +24,18 @@ import type {
   CreateTablePayload,
   DataCompareRequest,
   DataCompareResponse,
+  DataTransferChooseFilesResult,
+  DataTransferChooseFolderResult,
+  DataTransferDirectSendPayload,
+  DataTransferDownloadSharePayload,
+  DataTransferFavoritePayload,
+  DataTransferPublishPayload,
+  DataTransferResolveSelectedFilesPayload,
+  DataTransferRemoteShareResponse,
+  DataTransferSelectedFile,
+  DataTransferSnapshot,
+  DataTransferTaskCancelResponse,
+  DataTransferTaskStartResponse,
   DatabaseEntry,
   DataSourceGroup,
   DeleteDataSourceGroupResult,
@@ -108,6 +121,129 @@ export async function getRuntimeMetrics(): Promise<RuntimeMetrics | null> {
     return null
   }
   return invokeCommand<RuntimeMetrics>('get_runtime_metrics')
+}
+
+export async function getDataTransferSnapshot(): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.getSnapshot()
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_get_snapshot')
+}
+
+export async function setDataTransferRegistrationEnabled(
+  enabled: boolean,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.setRegistrationEnabled({ enabled })
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_set_registration_enabled', {
+    payload: { enabled },
+  })
+}
+
+export async function refreshDataTransferDiscovery(): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.refreshDiscovery()
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_refresh_discovery')
+}
+
+export async function updateDataTransferFavorite(
+  payload: DataTransferFavoritePayload,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.updateFavorite(payload)
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_update_favorite', { payload })
+}
+
+export async function chooseDataTransferFiles(): Promise<DataTransferChooseFilesResult> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.chooseFiles()
+  }
+  return invokeCommand<DataTransferChooseFilesResult>('data_transfer_choose_files')
+}
+
+export async function chooseDataTransferFolder(): Promise<DataTransferChooseFolderResult> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.chooseFolder()
+  }
+  return invokeCommand<DataTransferChooseFolderResult>('data_transfer_choose_folder')
+}
+
+export async function resolveDataTransferSelectedFiles(
+  payload: DataTransferResolveSelectedFilesPayload,
+): Promise<DataTransferSelectedFile[]> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.resolveSelectedFiles(payload)
+  }
+  return invokeCommand<DataTransferSelectedFile[]>('data_transfer_resolve_selected_files', {
+    payload,
+  })
+}
+
+export async function startDataTransferDirectSend(
+  payload: DataTransferDirectSendPayload,
+): Promise<DataTransferTaskStartResponse> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.startDirectSend(payload)
+  }
+  return invokeCommand<DataTransferTaskStartResponse>('data_transfer_start_direct_send', {
+    payload,
+  })
+}
+
+export async function publishDataTransferFiles(
+  payload: DataTransferPublishPayload,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.publishFiles(payload)
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_publish_files', { payload })
+}
+
+export async function removeDataTransferPublishedShare(
+  shareId: string,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.removePublishedShare({ share_id: shareId })
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_remove_published_share', {
+    payload: { share_id: shareId },
+  })
+}
+
+export async function loadDataTransferRemoteShares(
+  nodeId: string,
+): Promise<DataTransferRemoteShareResponse> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.loadRemoteShares({ node_id: nodeId })
+  }
+  return invokeCommand<DataTransferRemoteShareResponse>('data_transfer_load_remote_shares', {
+    payload: { node_id: nodeId },
+  })
+}
+
+export async function downloadDataTransferShare(
+  payload: DataTransferDownloadSharePayload,
+): Promise<DataTransferTaskStartResponse> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.downloadShare(payload)
+  }
+  return invokeCommand<DataTransferTaskStartResponse>('data_transfer_download_share', {
+    payload,
+  })
+}
+
+export async function cancelDataTransferTask(
+  taskId: string,
+): Promise<DataTransferTaskCancelResponse> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.cancelTask(taskId)
+  }
+  return invokeCommand<DataTransferTaskCancelResponse>('data_transfer_cancel_task', {
+    taskId,
+  })
 }
 
 export async function createDataSourceGroup(

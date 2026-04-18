@@ -134,17 +134,25 @@ export function Modal({
   subtitle,
   children,
   actions,
+  cardClassName,
+  bodyClassName,
   onClose,
 }: {
   title: string
   subtitle?: string
   children: ReactNode
   actions?: ReactNode
+  cardClassName?: string
+  bodyClassName?: string
   onClose: () => void
 }) {
   return (
     <div className="modal-backdrop" role="presentation">
-      <div className="modal-card" role="dialog" aria-modal="true">
+      <div
+        className={cardClassName ? `modal-card ${cardClassName}` : 'modal-card'}
+        role="dialog"
+        aria-modal="true"
+      >
         <div className="modal-header">
           <div>
             <strong>{title}</strong>
@@ -155,7 +163,9 @@ export function Modal({
           </button>
         </div>
 
-        <div className="modal-body">{children}</div>
+        <div className={bodyClassName ? `modal-body ${bodyClassName}` : 'modal-body'}>
+          {children}
+        </div>
         {actions ? <div className="modal-actions">{actions}</div> : null}
       </div>
     </div>

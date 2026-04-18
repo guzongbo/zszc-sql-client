@@ -83,6 +83,7 @@ pub struct DataTransferTask {
     pub peer_alias: String,
     pub peer_fingerprint: String,
     pub status: String,
+    pub status_message: Option<String>,
     pub total_bytes: u64,
     pub transferred_bytes: u64,
     pub progress_percent: f64,
@@ -175,10 +176,25 @@ pub struct DataTransferDirectSendPayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub struct DataTransferAcceptIncomingTaskPayload {
+    pub task_id: String,
+    pub destination_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct DataTransferRejectIncomingTaskPayload {
+    pub task_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub struct DataTransferPublishPayload {
     pub file_paths: Vec<String>,
     pub scope: String,
     pub allowed_fingerprints: Vec<String>,
+    #[serde(default)]
+    pub password: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -188,6 +204,8 @@ pub struct DataTransferDownloadSharePayload {
     pub share_id: String,
     pub file_ids: Vec<String>,
     pub destination_dir: Option<String>,
+    #[serde(default)]
+    pub password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

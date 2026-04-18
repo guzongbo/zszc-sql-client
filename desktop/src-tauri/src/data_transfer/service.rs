@@ -21,6 +21,7 @@ use if_addrs::{IfAddr, get_if_addrs};
 use regex::Regex;
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -41,7 +42,6 @@ const DATA_TRANSFER_PORT: u16 = 53317;
 const MULTICAST_ADDR: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 167);
 const NODE_TTL: Duration = Duration::from_secs(45);
 const ANNOUNCE_INTERVAL: Duration = Duration::from_secs(6);
-const TASK_RETENTION: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub struct DataTransferService {
@@ -78,16 +78,38 @@ struct NodeRuntime {
     source: String,
 }
 
+#[derive(Clone)]
 struct IncomingSession {
+    peer_alias: String,
     peer_fingerprint: String,
     peer_ip: String,
+    status: IncomingSessionStatus,
     task_id: String,
     files: HashMap<String, IncomingSessionFile>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IncomingSessionStatus {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+impl IncomingSessionStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+        }
+    }
 }
 
 #[derive(Clone)]
 struct IncomingSessionFile {
     file_id: String,
+    file_name: String,
+    size: u64,
     final_path: PathBuf,
     resource_id: String,
     temp_path: PathBuf,
@@ -100,6 +122,7 @@ struct LocalShareRuntime {
     created_at: String,
     files: Vec<LocalShareFileRuntime>,
     id: String,
+    password_hash: String,
     scope: String,
     title: String,
     total_bytes: u64,
@@ -181,9 +204,11 @@ struct WirePrepareUploadRequest {
 #[serde(rename_all = "camelCase")]
 struct WirePrepareUploadResponse {
     session_id: String,
+    status: String,
     files: HashMap<String, String>,
     #[serde(default)]
     offsets: HashMap<String, u64>,
+    message: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -202,6 +227,12 @@ struct CancelQuery {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadSessionStatusQuery {
+    session_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct RemoteSharesQuery {
     requester_fingerprint: String,
@@ -213,6 +244,8 @@ struct RemoteDownloadQuery {
     share_id: String,
     file_id: String,
     requester_fingerprint: String,
+    #[serde(default)]
+    password: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -262,6 +295,21 @@ impl DataTransferService {
             .into_iter()
             .map(|item| (item.id.clone(), LocalShareRuntime::from_record(item)))
             .collect::<HashMap<_, _>>();
+        let tasks = local_store
+            .list_data_transfer_tasks(500)?
+            .into_iter()
+            .filter(|task| !task.id.is_empty())
+            .map(|task| {
+                (
+                    task.id.clone(),
+                    TaskRuntime {
+                        cancel_flag: Arc::new(AtomicBool::new(false)),
+                        finished_at: None,
+                        snapshot: task,
+                    },
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let default_download_dir = resolve_default_download_dir(&app_data_dir);
 
         let state = ServiceState {
@@ -270,7 +318,7 @@ impl DataTransferService {
             nodes: HashMap::new(),
             published_shares,
             registration_enabled,
-            tasks: HashMap::new(),
+            tasks,
         };
         let (shutdown_tx, _) = watch::channel(false);
 
@@ -417,17 +465,26 @@ impl DataTransferService {
     ) -> Result<DataTransferPublishedShare> {
         ensure!(!payload.file_paths.is_empty(), "请选择至少一个文件");
         validate_share_scope(&payload.scope)?;
+        if payload.scope == "password_protected" {
+            ensure!(!payload.password.trim().is_empty(), "请设置共享访问密码");
+        }
 
         let share_id = Uuid::new_v4().to_string();
         let now = Utc::now().to_rfc3339();
         let files = collect_publish_files(&payload.file_paths)?;
         let total_bytes = files.iter().map(|item| item.size).sum();
         let title = default_share_title(&files);
+        let scope = payload.scope.clone();
+        let password_hash = if scope == "password_protected" {
+            hash_share_password(&payload.password)
+        } else {
+            String::new()
+        };
 
         let share = DataTransferPublishedShareRecord {
             id: share_id.clone(),
             title: title.clone(),
-            scope: payload.scope,
+            scope,
             file_count: files.len() as u64,
             total_bytes,
             created_at: now.clone(),
@@ -437,6 +494,7 @@ impl DataTransferService {
                 .map(DataTransferPublishedFileRecord::from_runtime)
                 .collect(),
             allowed_fingerprints: payload.allowed_fingerprints,
+            password_hash,
         };
 
         self.local_store
@@ -537,36 +595,6 @@ impl DataTransferService {
             .context("目标节点不存在或已离线")?;
         let files = collect_send_files(&payload.file_paths)?;
 
-        let prepare_payload = WirePrepareUploadRequest {
-            info: self.local_register_dto(),
-            files: files
-                .iter()
-                .map(|item| (item.id.clone(), item.to_wire()))
-                .collect(),
-        };
-
-        let response = self
-            .http_client
-            .post(format!(
-                "http://{}:{}/api/localsend/v2/prepare-upload",
-                node.ip, node.port
-            ))
-            .json(&prepare_payload)
-            .send()
-            .await
-            .context("创建直传会话失败")?;
-
-        ensure!(
-            response.status() == StatusCode::OK,
-            "创建直传会话失败: {}",
-            response.status()
-        );
-
-        let prepare_response = response
-            .json::<WirePrepareUploadResponse>()
-            .await
-            .context("解析直传会话响应失败")?;
-
         let task_id = Uuid::new_v4().to_string();
         self.create_task(
             task_id.clone(),
@@ -574,14 +602,11 @@ impl DataTransferService {
             "outgoing",
             node.alias.clone(),
             node.fingerprint.clone(),
-            files.iter().map(|file| {
-                (
-                    file.id.clone(),
-                    file.file_name.clone(),
-                    file.size,
-                    prepare_response.offsets.get(&file.id).copied().unwrap_or(0),
-                )
-            }),
+            "pending",
+            Some("已发起发送请求，等待对方确认接收".to_string()),
+            files
+                .iter()
+                .map(|file| (file.id.clone(), file.file_name.clone(), file.size, 0)),
         )
         .await;
 
@@ -589,7 +614,7 @@ impl DataTransferService {
         let task_id_for_task = task_id.clone();
         tokio::spawn(async move {
             if let Err(error) = service
-                .run_direct_send_task(task_id_for_task.clone(), node, files, prepare_response)
+                .run_direct_send_task(task_id_for_task.clone(), node, files)
                 .await
             {
                 service
@@ -639,6 +664,8 @@ impl DataTransferService {
             "incoming",
             node.alias.clone(),
             node.fingerprint.clone(),
+            "running",
+            None,
             selected_files
                 .iter()
                 .map(|file| (file.id.clone(), file.file_name.clone(), file.size, 0)),
@@ -659,6 +686,7 @@ impl DataTransferService {
                     share.id,
                     selected_files,
                     destination_dir,
+                    payload.password,
                 )
                 .await
             {
@@ -672,25 +700,113 @@ impl DataTransferService {
     }
 
     pub async fn cancel_task(&self, task_id: &str) -> Result<DataTransferTaskCancelResponse> {
-        let accepted = self
-            .state
-            .write()
-            .await
-            .tasks
-            .get_mut(task_id)
-            .map(|task| {
-                task.cancel_flag.store(true, Ordering::SeqCst);
-                task.snapshot.status = "canceled".to_string();
-                task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
-                task.finished_at = Some(Instant::now());
-                true
-            })
-            .unwrap_or(false);
+        let accepted = self.cancel_task_runtime(task_id, "任务已取消").await;
 
         Ok(DataTransferTaskCancelResponse {
             task_id: task_id.to_string(),
             accepted,
         })
+    }
+
+    pub async fn accept_incoming_task(
+        &self,
+        task_id: &str,
+        destination_dir: Option<String>,
+    ) -> Result<DataTransferSnapshot> {
+        let destination_dir = destination_dir
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.default_download_dir.clone());
+        ensure_directory(&destination_dir).await?;
+
+        let (session_id, peer_fingerprint, files) = {
+            let state = self.state.read().await;
+            let (session_id, session) = state
+                .incoming_sessions
+                .iter()
+                .find(|(_, session)| session.task_id == task_id)
+                .context("待接收任务不存在")?;
+            ensure!(
+                session.status == IncomingSessionStatus::Pending,
+                "当前任务已处理"
+            );
+            (
+                session_id.clone(),
+                session.peer_fingerprint.clone(),
+                session.files.values().cloned().collect::<Vec<_>>(),
+            )
+        };
+
+        let mut refreshed_files = HashMap::new();
+        for file in files {
+            let final_path = unique_download_path(&destination_dir, &file.file_name).await?;
+            self.local_store
+                .upsert_data_transfer_partial(DataTransferPartialRecord {
+                    transfer_kind: "incoming_upload".to_string(),
+                    peer_fingerprint: peer_fingerprint.clone(),
+                    resource_id: file.resource_id.clone(),
+                    file_name: file.file_name.clone(),
+                    temp_path: file.temp_path.display().to_string(),
+                    final_path: final_path.display().to_string(),
+                    total_bytes: file.size,
+                    created_at: Utc::now().to_rfc3339(),
+                    updated_at: Utc::now().to_rfc3339(),
+                })?;
+
+            refreshed_files.insert(
+                file.file_id.clone(),
+                IncomingSessionFile { final_path, ..file },
+            );
+        }
+
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let session = state
+                .incoming_sessions
+                .get_mut(&session_id)
+                .context("待接收会话不存在")?;
+            ensure!(
+                session.status == IncomingSessionStatus::Pending,
+                "当前任务已处理"
+            );
+            session.status = IncomingSessionStatus::Accepted;
+            session.files = refreshed_files;
+            let task = state.tasks.get_mut(task_id).context("待接收任务不存在")?;
+            task.snapshot.status = "pending".to_string();
+            task.snapshot.status_message = Some("已确认接收，等待发送方开始传输".to_string());
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.snapshot.clone()
+        };
+        self.persist_task_snapshot(&snapshot);
+        Ok(self.snapshot())
+    }
+
+    pub async fn reject_incoming_task(&self, task_id: &str) -> Result<DataTransferSnapshot> {
+        let session_id = {
+            let state = self.state.read().await;
+            let (session_id, session) = state
+                .incoming_sessions
+                .iter()
+                .find(|(_, session)| session.task_id == task_id)
+                .context("待接收任务不存在")?;
+            ensure!(
+                session.status == IncomingSessionStatus::Pending,
+                "当前任务已处理"
+            );
+            session_id.clone()
+        };
+
+        {
+            let mut state = self.state.write().await;
+            let session = state
+                .incoming_sessions
+                .get_mut(&session_id)
+                .context("待接收会话不存在")?;
+            session.status = IncomingSessionStatus::Rejected;
+        }
+
+        self.finish_task_canceled(task_id, "已拒绝接收该文件".to_string())
+            .await;
+        Ok(self.snapshot())
     }
 
     pub async fn shutdown(&self) {
@@ -788,6 +904,10 @@ impl DataTransferService {
                     web::get().to(http_list_remote_shares_handler),
                 )
                 .route(
+                    "/api/zszc-transfer/v1/upload-session-status",
+                    web::get().to(http_upload_session_status_handler),
+                )
+                .route(
                     "/api/zszc-transfer/v1/share-file",
                     web::get().to(http_download_share_file_handler),
                 )
@@ -807,9 +927,74 @@ impl DataTransferService {
         task_id: String,
         node: NodeRuntime,
         files: Vec<SendFileRuntime>,
-        response: WirePrepareUploadResponse,
     ) -> Result<()> {
+        let prepare_payload = WirePrepareUploadRequest {
+            info: self.local_register_dto(),
+            files: files
+                .iter()
+                .map(|item| (item.id.clone(), item.to_wire()))
+                .collect(),
+        };
+
+        let response = self
+            .http_client
+            .post(format!(
+                "http://{}:{}/api/localsend/v2/prepare-upload",
+                node.ip, node.port
+            ))
+            .json(&prepare_payload)
+            .send()
+            .await
+            .context("创建直传会话失败")?;
+
+        ensure!(
+            response.status() == StatusCode::OK,
+            "创建直传会话失败: {}",
+            response.status()
+        );
+
+        let mut response = response
+            .json::<WirePrepareUploadResponse>()
+            .await
+            .context("解析直传会话响应失败")?;
         let remote_session_id = response.session_id;
+        let task_cancel = self.task_cancel_flag(&task_id).await;
+
+        while response.status == "pending" {
+            if task_cancel.load(Ordering::SeqCst) {
+                let _ = self.cancel_remote_session(&node, &remote_session_id).await;
+                return Err(anyhow!("任务已取消"));
+            }
+
+            self.update_task_status_message(&task_id, Some("等待对方确认接收".to_string()), None)
+                .await;
+
+            tokio::time::sleep(Duration::from_millis(900)).await;
+            response = self
+                .load_upload_session_status(&node, &remote_session_id)
+                .await?;
+        }
+
+        if response.status == "rejected" {
+            return Err(anyhow!(
+                "{}",
+                response
+                    .message
+                    .unwrap_or_else(|| "接收方已拒绝此次传输".to_string())
+            ));
+        }
+
+        ensure!(
+            response.status == "accepted",
+            "传输会话状态异常: {}",
+            response.status
+        );
+        self.mark_task_running(
+            &task_id,
+            Some("对方已确认接收，正在建立传输通道".to_string()),
+        )
+        .await;
+
         for file in files {
             let token = match response.files.get(&file.id) {
                 Some(token) => token.clone(),
@@ -824,10 +1009,10 @@ impl DataTransferService {
                 .await;
 
             let url = format!("http://{}:{}/api/localsend/v2/upload", node.ip, node.port);
-            let task_cancel = self.task_cancel_flag(&task_id).await;
             let file_id = file.id.clone();
             let task_id_for_stream = task_id.clone();
             let path = file.path.clone();
+            let task_cancel_for_stream = task_cancel.clone();
             let mut source = File::open(&path)
                 .await
                 .with_context(|| format!("打开待发送文件失败: {}", path.display()))?;
@@ -835,7 +1020,7 @@ impl DataTransferService {
             let progress = Arc::new(Mutex::new(offset));
             let service = self.clone();
             let stream = ReaderStream::with_capacity(source, 64 * 1024).map(move |item| {
-                if task_cancel.load(Ordering::SeqCst) {
+                if task_cancel_for_stream.load(Ordering::SeqCst) {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Interrupted,
                         "task canceled",
@@ -897,6 +1082,7 @@ impl DataTransferService {
         share_id: String,
         files: Vec<DataTransferRemoteFile>,
         destination_dir: PathBuf,
+        password: Option<String>,
     ) -> Result<()> {
         ensure_directory(&destination_dir).await?;
 
@@ -942,6 +1128,7 @@ impl DataTransferService {
                     ("share_id", share_id.as_str()),
                     ("file_id", file.id.as_str()),
                     ("requester_fingerprint", self.local_fingerprint().as_str()),
+                    ("password", password.as_deref().unwrap_or("")),
                 ]);
             let request = if offset > 0 {
                 request.header("range", format!("bytes={offset}-"))
@@ -995,6 +1182,54 @@ impl DataTransferService {
         Ok(())
     }
 
+    async fn load_upload_session_status(
+        &self,
+        node: &NodeRuntime,
+        session_id: &str,
+    ) -> Result<WirePrepareUploadResponse> {
+        let response = self
+            .http_client
+            .get(format!(
+                "http://{}:{}/api/zszc-transfer/v1/upload-session-status",
+                node.ip, node.port
+            ))
+            .query(&[("sessionId", session_id)])
+            .send()
+            .await
+            .context("读取接收确认状态失败")?;
+
+        ensure!(
+            response.status() == StatusCode::OK,
+            "读取接收确认状态失败: {}",
+            response.status()
+        );
+
+        response
+            .json::<WirePrepareUploadResponse>()
+            .await
+            .context("解析接收确认状态失败")
+    }
+
+    async fn cancel_remote_session(&self, node: &NodeRuntime, session_id: &str) -> Result<()> {
+        let response = self
+            .http_client
+            .post(format!(
+                "http://{}:{}/api/localsend/v2/cancel",
+                node.ip, node.port
+            ))
+            .query(&[("sessionId", session_id)])
+            .send()
+            .await
+            .context("取消远端接收会话失败")?;
+
+        ensure!(
+            response.status() == StatusCode::OK,
+            "取消远端接收会话失败: {}",
+            response.status()
+        );
+        Ok(())
+    }
+
     async fn handle_register(&self, payload: WireRegisterDto, peer_ip: IpAddr) -> HttpResponse {
         if !self.state.read().await.registration_enabled {
             return HttpResponse::NotFound().finish();
@@ -1023,27 +1258,13 @@ impl DataTransferService {
         payload: WirePrepareUploadRequest,
         peer_ip: IpAddr,
     ) -> Result<HttpResponse> {
-        let mut files = HashMap::new();
-        let mut offsets = HashMap::new();
         let session_id = Uuid::new_v4().to_string();
         let task_id = Uuid::new_v4().to_string();
         let peer_alias = payload.info.alias.clone();
         let peer_fingerprint = payload.info.fingerprint.clone();
 
-        self.create_task(
-            task_id.clone(),
-            "direct_receive",
-            "incoming",
-            peer_alias.clone(),
-            peer_fingerprint.clone(),
-            payload
-                .files
-                .values()
-                .map(|file| (file.id.clone(), file.file_name.clone(), file.size, 0)),
-        )
-        .await;
-
         let mut session_files = HashMap::new();
+        let mut task_files = Vec::new();
         for file in payload.files.values() {
             let resource_id = file.id.clone();
             let partial = self.local_store.load_data_transfer_partial(
@@ -1074,27 +1295,40 @@ impl DataTransferService {
                 })?;
 
             let token = Uuid::new_v4().to_string();
-            files.insert(file.id.clone(), token.clone());
-            offsets.insert(file.id.clone(), offset);
+            task_files.push((file.id.clone(), file.file_name.clone(), file.size, offset));
             session_files.insert(
                 file.id.clone(),
                 IncomingSessionFile {
                     file_id: file.id.clone(),
+                    file_name: file.file_name.clone(),
+                    size: file.size,
                     final_path,
                     resource_id,
                     temp_path,
                     token,
                 },
             );
-            self.update_task_file_progress(&task_id, &file.id, offset)
-                .await;
         }
+
+        self.create_task(
+            task_id.clone(),
+            "direct_receive",
+            "incoming",
+            peer_alias.clone(),
+            peer_fingerprint.clone(),
+            "pending",
+            Some("等待你确认接收并选择保存位置".to_string()),
+            task_files,
+        )
+        .await;
 
         self.state.write().await.incoming_sessions.insert(
             session_id.clone(),
             IncomingSession {
+                peer_alias,
                 peer_fingerprint,
                 peer_ip: peer_ip.to_string(),
+                status: IncomingSessionStatus::Pending,
                 task_id,
                 files: session_files,
             },
@@ -1102,8 +1336,10 @@ impl DataTransferService {
 
         Ok(HttpResponse::Ok().json(WirePrepareUploadResponse {
             session_id,
-            files,
-            offsets,
+            status: "pending".to_string(),
+            files: HashMap::new(),
+            offsets: HashMap::new(),
+            message: Some("等待接收方确认".to_string()),
         }))
     }
 
@@ -1122,6 +1358,10 @@ impl DataTransferService {
             ensure!(
                 session.peer_ip == peer_ip.to_string(),
                 "上传来源 IP 与会话不匹配"
+            );
+            ensure!(
+                session.status == IncomingSessionStatus::Accepted,
+                "接收方尚未确认接收"
             );
             let file = session
                 .files
@@ -1199,7 +1439,7 @@ impl DataTransferService {
             ensure!(session.peer_ip == peer_ip.to_string(), "取消来源不匹配");
             session.task_id.clone()
         };
-        self.finish_task_failure(&task_id, "发送端已取消传输".to_string())
+        self.finish_task_canceled(&task_id, "发送方已取消传输".to_string())
             .await;
         self.state
             .write()
@@ -1207,6 +1447,57 @@ impl DataTransferService {
             .incoming_sessions
             .remove(&query.session_id);
         Ok(HttpResponse::Ok().finish())
+    }
+
+    async fn handle_upload_session_status(
+        &self,
+        query: UploadSessionStatusQuery,
+        peer_ip: IpAddr,
+    ) -> Result<HttpResponse> {
+        let session = {
+            let state = self.state.read().await;
+            let session = state
+                .incoming_sessions
+                .get(&query.session_id)
+                .cloned()
+                .context("传输会话不存在")?;
+            ensure!(session.peer_ip == peer_ip.to_string(), "查询来源不匹配");
+            session
+        };
+
+        let mut files = HashMap::new();
+        let mut offsets = HashMap::new();
+        if session.status == IncomingSessionStatus::Accepted {
+            for file in session.files.values() {
+                files.insert(file.file_id.clone(), file.token.clone());
+                offsets.insert(
+                    file.file_id.clone(),
+                    existing_file_length(&file.temp_path).await?,
+                );
+            }
+        }
+
+        if session.status == IncomingSessionStatus::Rejected {
+            self.state
+                .write()
+                .await
+                .incoming_sessions
+                .remove(&query.session_id);
+        }
+
+        Ok(HttpResponse::Ok().json(WirePrepareUploadResponse {
+            session_id: query.session_id,
+            status: session.status.as_str().to_string(),
+            files,
+            offsets,
+            message: match session.status {
+                IncomingSessionStatus::Pending => Some("等待接收方确认".to_string()),
+                IncomingSessionStatus::Accepted => {
+                    Some(format!("{} 已确认接收", session.peer_alias))
+                }
+                IncomingSessionStatus::Rejected => Some("接收方已拒绝此次传输".to_string()),
+            },
+        }))
     }
 
     async fn handle_list_remote_shares(
@@ -1217,7 +1508,7 @@ impl DataTransferService {
         let shares = state
             .published_shares
             .values()
-            .filter(|share| share.can_access(&requester_fingerprint, &state.favorite_nodes))
+            .filter(|share| share.can_list(&requester_fingerprint, &state.favorite_nodes))
             .map(|share| RemoteShareWire {
                 id: share.id.clone(),
                 title: share.title.clone(),
@@ -1259,9 +1550,10 @@ impl DataTransferService {
             .cloned()
             .context("目标共享不存在")?;
         ensure!(
-            share.can_access(
+            share.can_download(
                 &query.requester_fingerprint,
                 &self.state.read().await.favorite_nodes,
+                query.password.as_deref(),
             ),
             "没有共享访问权限"
         );
@@ -1494,6 +1786,8 @@ impl DataTransferService {
         direction: &str,
         peer_alias: String,
         peer_fingerprint: String,
+        status: &str,
+        status_message: Option<String>,
         files: I,
     ) where
         I: IntoIterator<Item = (String, String, u64, u64)>,
@@ -1511,61 +1805,75 @@ impl DataTransferService {
             })
             .collect::<Vec<_>>();
         let total_bytes = files.iter().map(|item| item.size).sum();
+        let transferred_bytes = files.iter().map(|item| item.transferred_bytes).sum::<u64>();
+        let snapshot = DataTransferTask {
+            id: task_id.clone(),
+            kind: kind.to_string(),
+            direction: direction.to_string(),
+            peer_alias,
+            peer_fingerprint,
+            status: status.to_string(),
+            status_message,
+            total_bytes,
+            transferred_bytes,
+            progress_percent: if total_bytes == 0 {
+                100.0
+            } else {
+                (transferred_bytes as f64 / total_bytes as f64) * 100.0
+            },
+            current_file_name: None,
+            started_at: started_at.clone(),
+            updated_at: started_at,
+            completed_at: None,
+            error_message: None,
+            files,
+        };
 
         self.state.write().await.tasks.insert(
-            task_id.clone(),
+            task_id,
             TaskRuntime {
                 cancel_flag: Arc::new(AtomicBool::new(false)),
                 finished_at: None,
-                snapshot: DataTransferTask {
-                    id: task_id,
-                    kind: kind.to_string(),
-                    direction: direction.to_string(),
-                    peer_alias,
-                    peer_fingerprint,
-                    status: "running".to_string(),
-                    total_bytes,
-                    transferred_bytes: files.iter().map(|item| item.transferred_bytes).sum(),
-                    progress_percent: if total_bytes == 0 { 100.0 } else { 0.0 },
-                    current_file_name: None,
-                    started_at: started_at.clone(),
-                    updated_at: started_at,
-                    completed_at: None,
-                    error_message: None,
-                    files,
-                },
+                snapshot: snapshot.clone(),
             },
         );
+        self.persist_task_snapshot(&snapshot);
     }
 
     async fn update_task_file_progress(&self, task_id: &str, file_id: &str, transferred: u64) {
-        let mut state = self.state.write().await;
-        let Some(task) = state.tasks.get_mut(task_id) else {
-            return;
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            let Some(file) = task
+                .snapshot
+                .files
+                .iter_mut()
+                .find(|item| item.id == file_id)
+            else {
+                return;
+            };
+            file.transferred_bytes = transferred.min(file.size);
+            file.status = "running".to_string();
+            task.snapshot.status = "running".to_string();
+            task.snapshot.status_message = None;
+            task.snapshot.current_file_name = Some(file.file_name.clone());
+            task.snapshot.transferred_bytes = task
+                .snapshot
+                .files
+                .iter()
+                .map(|item| item.transferred_bytes)
+                .sum();
+            task.snapshot.progress_percent = if task.snapshot.total_bytes == 0 {
+                100.0
+            } else {
+                (task.snapshot.transferred_bytes as f64 / task.snapshot.total_bytes as f64) * 100.0
+            };
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.snapshot.clone()
         };
-        let Some(file) = task
-            .snapshot
-            .files
-            .iter_mut()
-            .find(|item| item.id == file_id)
-        else {
-            return;
-        };
-        file.transferred_bytes = transferred.min(file.size);
-        file.status = "running".to_string();
-        task.snapshot.current_file_name = Some(file.file_name.clone());
-        task.snapshot.transferred_bytes = task
-            .snapshot
-            .files
-            .iter()
-            .map(|item| item.transferred_bytes)
-            .sum();
-        task.snapshot.progress_percent = if task.snapshot.total_bytes == 0 {
-            100.0
-        } else {
-            (task.snapshot.transferred_bytes as f64 / task.snapshot.total_bytes as f64) * 100.0
-        };
-        task.snapshot.updated_at = Utc::now().to_rfc3339();
+        self.persist_task_snapshot(&snapshot);
     }
 
     async fn finish_task_file(
@@ -1575,65 +1883,134 @@ impl DataTransferService {
         status: &str,
         error_message: Option<String>,
     ) {
-        let mut state = self.state.write().await;
-        let Some(task) = state.tasks.get_mut(task_id) else {
-            return;
-        };
-        if let Some(file) = task
-            .snapshot
-            .files
-            .iter_mut()
-            .find(|item| item.id == file_id)
-        {
-            file.status = status.to_string();
-            file.error_message = error_message;
-            if status == "completed" {
-                file.transferred_bytes = file.size;
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            if let Some(file) = task
+                .snapshot
+                .files
+                .iter_mut()
+                .find(|item| item.id == file_id)
+            {
+                file.status = status.to_string();
+                file.error_message = error_message;
+                if status == "completed" {
+                    file.transferred_bytes = file.size;
+                }
             }
-        }
-        task.snapshot.transferred_bytes = task
-            .snapshot
-            .files
-            .iter()
-            .map(|item| item.transferred_bytes)
-            .sum();
-        task.snapshot.progress_percent = if task.snapshot.total_bytes == 0 {
-            100.0
-        } else {
-            (task.snapshot.transferred_bytes as f64 / task.snapshot.total_bytes as f64) * 100.0
+            task.snapshot.transferred_bytes = task
+                .snapshot
+                .files
+                .iter()
+                .map(|item| item.transferred_bytes)
+                .sum();
+            task.snapshot.progress_percent = if task.snapshot.total_bytes == 0 {
+                100.0
+            } else {
+                (task.snapshot.transferred_bytes as f64 / task.snapshot.total_bytes as f64) * 100.0
+            };
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.snapshot.clone()
         };
-        task.snapshot.updated_at = Utc::now().to_rfc3339();
+        self.persist_task_snapshot(&snapshot);
     }
 
     async fn finish_task_success(&self, task_id: &str) {
-        let mut state = self.state.write().await;
-        let Some(task) = state.tasks.get_mut(task_id) else {
-            return;
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            task.snapshot.status = "completed".to_string();
+            task.snapshot.status_message = None;
+            task.snapshot.current_file_name = None;
+            task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
+            task.snapshot.error_message = None;
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.snapshot.progress_percent = 100.0;
+            task.finished_at = Some(Instant::now());
+            task.snapshot.clone()
         };
-        task.snapshot.status = "completed".to_string();
-        task.snapshot.current_file_name = None;
-        task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
-        task.snapshot.error_message = None;
-        task.snapshot.updated_at = Utc::now().to_rfc3339();
-        task.snapshot.progress_percent = 100.0;
-        task.finished_at = Some(Instant::now());
+        self.persist_task_snapshot(&snapshot);
     }
 
     async fn finish_task_failure(&self, task_id: &str, message: String) {
-        let mut state = self.state.write().await;
-        let Some(task) = state.tasks.get_mut(task_id) else {
-            return;
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            task.snapshot.status = if task.cancel_flag.load(Ordering::SeqCst) {
+                "canceled".to_string()
+            } else {
+                "failed".to_string()
+            };
+            task.snapshot.status_message = None;
+            task.snapshot.error_message = Some(message);
+            task.snapshot.current_file_name = None;
+            task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.finished_at = Some(Instant::now());
+            task.snapshot.clone()
         };
-        task.snapshot.status = if task.cancel_flag.load(Ordering::SeqCst) {
-            "canceled".to_string()
-        } else {
-            "failed".to_string()
+        self.persist_task_snapshot(&snapshot);
+    }
+
+    async fn finish_task_canceled(&self, task_id: &str, message: String) {
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            task.cancel_flag.store(true, Ordering::SeqCst);
+            task.snapshot.status = "canceled".to_string();
+            task.snapshot.status_message = None;
+            task.snapshot.error_message = Some(message);
+            task.snapshot.current_file_name = None;
+            task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.finished_at = Some(Instant::now());
+            task.snapshot.clone()
         };
-        task.snapshot.error_message = Some(message);
-        task.snapshot.current_file_name = None;
-        task.snapshot.completed_at = Some(Utc::now().to_rfc3339());
-        task.snapshot.updated_at = Utc::now().to_rfc3339();
-        task.finished_at = Some(Instant::now());
+        self.persist_task_snapshot(&snapshot);
+    }
+
+    async fn update_task_status_message(
+        &self,
+        task_id: &str,
+        status_message: Option<String>,
+        status: Option<&str>,
+    ) {
+        let snapshot = {
+            let mut state = self.state.write().await;
+            let Some(task) = state.tasks.get_mut(task_id) else {
+                return;
+            };
+            if let Some(status) = status {
+                task.snapshot.status = status.to_string();
+            }
+            task.snapshot.status_message = status_message;
+            task.snapshot.updated_at = Utc::now().to_rfc3339();
+            task.snapshot.clone()
+        };
+        self.persist_task_snapshot(&snapshot);
+    }
+
+    async fn mark_task_running(&self, task_id: &str, status_message: Option<String>) {
+        self.update_task_status_message(task_id, status_message, Some("running"))
+            .await;
+    }
+
+    async fn cancel_task_runtime(&self, task_id: &str, message: &str) -> bool {
+        let task_exists = self.state.read().await.tasks.contains_key(task_id);
+        if !task_exists {
+            return false;
+        }
+        self.finish_task_canceled(task_id, message.to_string())
+            .await;
+        true
     }
 
     async fn task_cancel_flag(&self, task_id: &str) -> Arc<AtomicBool> {
@@ -1644,6 +2021,12 @@ impl DataTransferService {
             .get(task_id)
             .map(|item| item.cancel_flag.clone())
             .unwrap_or_else(|| Arc::new(AtomicBool::new(false)))
+    }
+
+    fn persist_task_snapshot(&self, snapshot: &DataTransferTask) {
+        if let Err(error) = self.local_store.upsert_data_transfer_task(snapshot) {
+            warn!(error = %error, task_id = %snapshot.id, "failed to persist data transfer task");
+        }
     }
 
     async fn resolve_partial_paths(
@@ -1776,6 +2159,20 @@ async fn http_list_remote_shares_handler(
     }
 }
 
+async fn http_upload_session_status_handler(
+    service: web::Data<Arc<DataTransferService>>,
+    request: HttpRequest,
+    query: web::Query<UploadSessionStatusQuery>,
+) -> impl Responder {
+    match service
+        .handle_upload_session_status(query.into_inner(), peer_ip(&request))
+        .await
+    {
+        Ok(response) => response,
+        Err(error) => HttpResponse::Forbidden().body(error.to_string()),
+    }
+}
+
 async fn http_download_share_file_handler(
     service: web::Data<Arc<DataTransferService>>,
     request: HttpRequest,
@@ -1848,6 +2245,7 @@ impl LocalShareRuntime {
                 })
                 .collect(),
             id: record.id,
+            password_hash: record.password_hash,
             scope: record.scope,
             title: record.title,
             total_bytes: record.total_bytes,
@@ -1879,7 +2277,7 @@ impl LocalShareRuntime {
         }
     }
 
-    fn can_access(
+    fn can_list(
         &self,
         requester_fingerprint: &str,
         favorite_nodes: &HashMap<String, DataTransferFavoriteNode>,
@@ -1887,6 +2285,27 @@ impl LocalShareRuntime {
         match self.scope.as_str() {
             "all" => true,
             "favorite_only" => favorite_nodes.contains_key(requester_fingerprint),
+            "password_protected" => true,
+            "selected_nodes" => self
+                .allowed_fingerprints
+                .iter()
+                .any(|item| item == requester_fingerprint),
+            _ => false,
+        }
+    }
+
+    fn can_download(
+        &self,
+        requester_fingerprint: &str,
+        favorite_nodes: &HashMap<String, DataTransferFavoriteNode>,
+        password: Option<&str>,
+    ) -> bool {
+        match self.scope.as_str() {
+            "all" => true,
+            "favorite_only" => favorite_nodes.contains_key(requester_fingerprint),
+            "password_protected" => password
+                .map(hash_share_password)
+                .is_some_and(|hash| hash == self.password_hash),
             "selected_nodes" => self
                 .allowed_fingerprints
                 .iter()
@@ -1897,11 +2316,7 @@ impl LocalShareRuntime {
 }
 
 fn prune_runtime(state: &mut ServiceState) {
-    state.tasks.retain(|_, task| {
-        task.finished_at
-            .map(|time| time.elapsed() <= TASK_RETENTION)
-            .unwrap_or(true)
-    });
+    let _ = state;
 }
 
 fn create_multicast_socket() -> Result<std::net::UdpSocket> {
@@ -1942,10 +2357,19 @@ fn private_ipv4_addresses() -> Result<Vec<Ipv4Addr>> {
 
 fn validate_share_scope(scope: &str) -> Result<()> {
     ensure!(
-        matches!(scope, "all" | "favorite_only" | "selected_nodes"),
+        matches!(
+            scope,
+            "all" | "favorite_only" | "password_protected" | "selected_nodes"
+        ),
         "共享范围不支持: {scope}"
     );
     Ok(())
+}
+
+fn hash_share_password(password: &str) -> String {
+    let mut hasher = Sha1::new();
+    hasher.update(password.trim().as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 fn default_share_title(files: &[SendFileRuntime]) -> String {

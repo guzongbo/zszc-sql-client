@@ -26,10 +26,12 @@ import type {
   DataCompareResponse,
   DataTransferChooseFilesResult,
   DataTransferChooseFolderResult,
+  DataTransferAcceptIncomingTaskPayload,
   DataTransferDirectSendPayload,
   DataTransferDownloadSharePayload,
   DataTransferFavoritePayload,
   DataTransferPublishPayload,
+  DataTransferRejectIncomingTaskPayload,
   DataTransferResolveSelectedFilesPayload,
   DataTransferRemoteShareResponse,
   DataTransferSelectedFile,
@@ -191,6 +193,24 @@ export async function startDataTransferDirectSend(
   return invokeCommand<DataTransferTaskStartResponse>('data_transfer_start_direct_send', {
     payload,
   })
+}
+
+export async function acceptDataTransferIncomingTask(
+  payload: DataTransferAcceptIncomingTaskPayload,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.acceptIncomingTask(payload)
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_accept_incoming_task', { payload })
+}
+
+export async function rejectDataTransferIncomingTask(
+  payload: DataTransferRejectIncomingTaskPayload,
+): Promise<DataTransferSnapshot> {
+  if (!isDesktopShell()) {
+    return dataTransferMockApi.rejectIncomingTask(payload)
+  }
+  return invokeCommand<DataTransferSnapshot>('data_transfer_reject_incoming_task', { payload })
 }
 
 export async function publishDataTransferFiles(

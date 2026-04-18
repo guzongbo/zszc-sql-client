@@ -1,3 +1,5 @@
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod app_state;
 mod commands;
 mod compare_core;
@@ -147,6 +149,8 @@ fn main() {
             commands::data_transfer_choose_folder,
             commands::data_transfer_resolve_selected_files,
             commands::data_transfer_start_direct_send,
+            commands::data_transfer_accept_incoming_task,
+            commands::data_transfer_reject_incoming_task,
             commands::data_transfer_publish_files,
             commands::data_transfer_remove_published_share,
             commands::data_transfer_load_remote_shares,

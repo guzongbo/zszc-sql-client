@@ -18,7 +18,11 @@ export type RuntimeMetrics = {
   memory_mb: number
 }
 
-export type DataTransferShareScope = 'all' | 'favorite_only' | 'selected_nodes'
+export type DataTransferShareScope =
+  | 'all'
+  | 'favorite_only'
+  | 'password_protected'
+  | 'selected_nodes'
 
 export type DataTransferLocalNode = {
   alias: string
@@ -89,6 +93,7 @@ export type DataTransferTask = {
   peer_alias: string
   peer_fingerprint: string
   status: string
+  status_message: string | null
   total_bytes: number
   transferred_bytes: number
   progress_percent: number
@@ -161,10 +166,20 @@ export type DataTransferDirectSendPayload = {
   file_paths: string[]
 }
 
+export type DataTransferAcceptIncomingTaskPayload = {
+  task_id: string
+  destination_dir?: string | null
+}
+
+export type DataTransferRejectIncomingTaskPayload = {
+  task_id: string
+}
+
 export type DataTransferPublishPayload = {
   file_paths: string[]
   scope: DataTransferShareScope
   allowed_fingerprints: string[]
+  password: string
 }
 
 export type DataTransferDownloadSharePayload = {
@@ -172,6 +187,7 @@ export type DataTransferDownloadSharePayload = {
   share_id: string
   file_ids: string[]
   destination_dir?: string | null
+  password?: string | null
 }
 
 export type DataTransferRemoveSharePayload = {

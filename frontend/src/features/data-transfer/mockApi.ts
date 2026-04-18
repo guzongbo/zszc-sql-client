@@ -1,4 +1,5 @@
 import type {
+  DataTransferAcceptIncomingTaskPayload,
   DataTransferChooseFilesResult,
   DataTransferChooseFolderResult,
   DataTransferDirectSendPayload,
@@ -8,6 +9,7 @@ import type {
   DataTransferLoadRemoteSharesPayload,
   DataTransferPublishedFile,
   DataTransferPublishPayload,
+  DataTransferRejectIncomingTaskPayload,
   DataTransferResolveSelectedFilesPayload,
   DataTransferRegistrationPayload,
   DataTransferRemoteShare,
@@ -26,9 +28,14 @@ type MockTaskRuntime = {
   started_at_ms: number
 }
 
+type MockPendingTaskRuntime = {
+  activate_at_ms: number
+  outcome: 'running' | 'rejected'
+}
+
 const baseNow = Date.now()
 let chooseFilesCursor = 0
-let shareCounter = 1
+let shareCounter = 4
 let taskCounter = 2
 
 const mockFileSelections = [
@@ -112,6 +119,13 @@ const taskRuntimes: Record<string, MockTaskRuntime> = {
   },
 }
 
+const pendingTaskRuntimes: Record<string, MockPendingTaskRuntime> = {
+  'mock-task-pending': {
+    activate_at_ms: baseNow + 4_000,
+    outcome: 'rejected',
+  },
+}
+
 const snapshotState: DataTransferSnapshot = {
   local_node: {
     alias: '本机 · ZSZC Studio',
@@ -187,17 +201,51 @@ const snapshotState: DataTransferSnapshot = {
   published_shares: [
     {
       id: 'mock-share-local-1',
-      title: '数据库脚本合集',
-      scope: 'favorite_only',
-      file_count: 2,
-      total_bytes: 4_216_341,
-      created_at: iso(baseNow - 1000 * 60 * 26),
-      updated_at: iso(baseNow - 1000 * 60 * 26),
+      title: 'UI设计规范v2.0.pdf',
+      scope: 'all',
+      file_count: 1,
+      total_bytes: 24_600_000,
+      created_at: iso(baseNow - 1000 * 60 * 60 * 24 * 2),
+      updated_at: iso(baseNow - 1000 * 60 * 60 * 24 * 2),
+      files: [buildPublishedFile('UI设计规范v2.0.pdf', 24_600_000)],
+      allowed_fingerprints: [],
+    },
+    {
+      id: 'mock-share-local-2',
+      title: 'V2.0产品原型包.zip',
+      scope: 'password_protected',
+      file_count: 1,
+      total_bytes: 1_800_000_000,
+      created_at: iso(baseNow - 1000 * 60 * 60 * 24 * 7),
+      updated_at: iso(baseNow - 1000 * 60 * 60 * 24 * 7),
+      files: [buildPublishedFile('V2.0产品原型包.zip', 1_800_000_000)],
+      allowed_fingerprints: [],
+    },
+    {
+      id: 'mock-share-local-3',
+      title: '后端开发接口文档',
+      scope: 'all',
+      file_count: 3,
+      total_bytes: 456_000_000,
+      created_at: iso(baseNow - 1000 * 60 * 60 * 24 * 12),
+      updated_at: iso(baseNow - 1000 * 60 * 60 * 24 * 2),
       files: [
-        buildPublishedFile('baseline.sql', 1_904_128),
-        buildPublishedFile('patch-20260417.sql', 2_312_213),
+        buildPublishedFile('接口清单-v2.docx', 16_200_000),
+        buildPublishedFile('错误码说明.xlsx', 4_100_000),
+        buildPublishedFile('开放平台对接手册.pdf', 435_700_000),
       ],
       allowed_fingerprints: [],
+    },
+    {
+      id: 'mock-share-local-4',
+      title: 'V2.0版本测试用例.xlsx',
+      scope: 'selected_nodes',
+      file_count: 1,
+      total_bytes: 8_700_000,
+      created_at: iso(baseNow - 1000 * 60 * 60 * 24 * 16),
+      updated_at: iso(baseNow - 1000 * 60 * 60 * 24 * 8),
+      files: [buildPublishedFile('V2.0版本测试用例.xlsx', 8_700_000)],
+      allowed_fingerprints: ['node-design-mbp', 'node-qa-win'],
     },
   ],
   tasks: [
@@ -208,6 +256,7 @@ const snapshotState: DataTransferSnapshot = {
       peer_alias: '设计部工作站 (NF-3C8D2E)',
       peer_fingerprint: 'node-design-mbp',
       status: 'running',
+      status_message: null,
       total_bytes: 3_758_096_384,
       transferred_bytes: 0,
       progress_percent: 0,
@@ -225,6 +274,7 @@ const snapshotState: DataTransferSnapshot = {
       peer_alias: '全局共享',
       peer_fingerprint: 'local-share-all',
       status: 'running',
+      status_message: null,
       total_bytes: 2_684_354_560,
       transferred_bytes: 0,
       progress_percent: 0,
@@ -242,6 +292,7 @@ const snapshotState: DataTransferSnapshot = {
       peer_alias: '产品组-测试机 (NF-9F1A7B)',
       peer_fingerprint: 'node-qa-win',
       status: 'pending',
+      status_message: '等待对方确认接收',
       total_bytes: 1_932_735_283,
       transferred_bytes: 0,
       progress_percent: 0,
@@ -253,12 +304,34 @@ const snapshotState: DataTransferSnapshot = {
       files: [buildTaskFile('task-pending-file-1', '安装包.dmg', 1_932_735_283)],
     },
     {
+      id: 'mock-task-incoming-request',
+      kind: 'direct_receive',
+      direction: 'incoming',
+      peer_alias: '总经理-ThinkPad (192.168.1.101)',
+      peer_fingerprint: 'node-gm-thinkpad',
+      status: 'pending',
+      status_message: '等待确认接收',
+      total_bytes: 2_601_938_010,
+      transferred_bytes: 0,
+      progress_percent: 0,
+      current_file_name: null,
+      started_at: iso(baseNow - 8_000),
+      updated_at: iso(baseNow - 8_000),
+      completed_at: null,
+      error_message: null,
+      files: [
+        buildTaskFile('task-incoming-file-1', '2026Q1季度报告.pdf', 25_165_824),
+        buildTaskFile('task-incoming-file-2', '2026年度预算.xlsx', 2_576_772_186),
+      ],
+    },
+    {
       id: 'mock-task-completed',
       kind: 'shared_download',
       direction: 'incoming',
       peer_alias: '设计部 MacBook',
       peer_fingerprint: 'node-design-mbp',
       status: 'completed',
+      status_message: null,
       total_bytes: 11_924_126,
       transferred_bytes: 11_924_126,
       progress_percent: 100,
@@ -380,9 +453,56 @@ export const dataTransferMockApi = {
       kind: 'direct_send',
       peer_alias: node.alias,
       peer_fingerprint: node.fingerprint,
+      status: 'pending',
+      status_message: '已发起发送请求，等待对方确认接收',
     })
+    pendingTaskRuntimes[task.id] = {
+      activate_at_ms: Date.now() + 1_800,
+      outcome: node.id === 'node-qa-win' ? 'rejected' : 'running',
+    }
     snapshotState.tasks.unshift(task)
     return { task_id: task.id }
+  },
+
+  async acceptIncomingTask(
+    payload: DataTransferAcceptIncomingTaskPayload,
+  ): Promise<DataTransferSnapshot> {
+    await delay()
+    const task = snapshotState.tasks.find((item) => item.id === payload.task_id)
+    if (!task) {
+      throw new Error('待接收任务不存在')
+    }
+    task.status = 'pending'
+    task.status_message = '已确认接收，等待发送方开始传输'
+    task.started_at = iso(Date.now())
+    task.updated_at = iso(Date.now())
+    task.files = task.files.map((file) => ({
+      ...file,
+      transferred_bytes: 0,
+      status: 'pending',
+      error_message: null,
+    }))
+    pendingTaskRuntimes[task.id] = {
+      activate_at_ms: Date.now() + 1_200,
+      outcome: 'running',
+    }
+    return clone(snapshotState)
+  },
+
+  async rejectIncomingTask(
+    payload: DataTransferRejectIncomingTaskPayload,
+  ): Promise<DataTransferSnapshot> {
+    await delay()
+    const task = snapshotState.tasks.find((item) => item.id === payload.task_id)
+    if (!task) {
+      throw new Error('待接收任务不存在')
+    }
+    task.status = 'canceled'
+    task.status_message = null
+    task.error_message = '已拒绝接收该文件'
+    task.completed_at = iso(Date.now())
+    task.updated_at = task.completed_at
+    return clone(snapshotState)
   },
 
   async publishFiles(payload: DataTransferPublishPayload): Promise<DataTransferSnapshot> {
@@ -464,6 +584,8 @@ export const dataTransferMockApi = {
       kind: 'shared_download',
       peer_alias: node.alias,
       peer_fingerprint: node.fingerprint,
+      status: 'running',
+      status_message: null,
     })
     snapshotState.tasks.unshift(task)
     return { task_id: task.id }
@@ -477,6 +599,7 @@ export const dataTransferMockApi = {
     }
 
     task.status = 'canceled'
+    task.status_message = null
     task.error_message = '已在前端预览模式中取消任务'
     task.current_file_name = null
     task.completed_at = iso(Date.now())
@@ -488,6 +611,38 @@ export const dataTransferMockApi = {
 
 function advanceMockTasks() {
   const now = Date.now()
+
+  Object.entries(pendingTaskRuntimes).forEach(([taskId, runtime]) => {
+    const task = snapshotState.tasks.find((item) => item.id === taskId)
+    if (!task || task.status !== 'pending') {
+      delete pendingTaskRuntimes[taskId]
+      return
+    }
+
+    if (now < runtime.activate_at_ms) {
+      return
+    }
+
+    if (runtime.outcome === 'rejected') {
+      task.status = 'failed'
+      task.status_message = null
+      task.error_message = '接收方已拒绝此次传输'
+      task.completed_at = iso(now)
+      task.updated_at = iso(now)
+      delete pendingTaskRuntimes[taskId]
+      return
+    }
+
+    task.status = 'running'
+    task.status_message = '对方已确认接收，正在建立传输通道'
+    task.updated_at = iso(now)
+    taskRuntimes[taskId] = {
+      duration_ms: 12_000 + task.files.length * 3_500,
+      started_at_ms: now,
+    }
+    delete pendingTaskRuntimes[taskId]
+  })
+
   Object.entries(taskRuntimes).forEach(([taskId, runtime]) => {
     const task = snapshotState.tasks.find((item) => item.id === taskId)
     if (!task || task.status !== 'running') {
@@ -520,6 +675,7 @@ function advanceMockTasks() {
     task.progress_percent = task.total_bytes === 0 ? 100 : (transferredTotal / task.total_bytes) * 100
     task.current_file_name = ratio >= 1 ? null : currentFileName ?? task.files.at(-1)?.file_name ?? null
     task.updated_at = iso(now)
+    task.status_message = null
 
     if (ratio >= 1) {
       task.status = 'completed'
@@ -577,6 +733,8 @@ function buildRunningTask({
   kind,
   peer_alias,
   peer_fingerprint,
+  status,
+  status_message,
 }: {
   direction: string
   filePaths: string[]
@@ -584,6 +742,8 @@ function buildRunningTask({
   kind: string
   peer_alias: string
   peer_fingerprint: string
+  status?: string
+  status_message?: string | null
 }): DataTransferTask {
   const taskFiles =
     files ??
@@ -598,9 +758,12 @@ function buildRunningTask({
   taskCounter += 1
   const taskId = `mock-task-${taskCounter}`
   const started_at_ms = Date.now()
-  taskRuntimes[taskId] = {
-    duration_ms: 12_000 + taskFiles.length * 3_500,
-    started_at_ms,
+  const nextStatus = status ?? 'running'
+  if (nextStatus === 'running') {
+    taskRuntimes[taskId] = {
+      duration_ms: 12_000 + taskFiles.length * 3_500,
+      started_at_ms,
+    }
   }
 
   return {
@@ -609,7 +772,8 @@ function buildRunningTask({
     direction,
     peer_alias,
     peer_fingerprint,
-    status: 'running',
+    status: nextStatus,
+    status_message: status_message ?? null,
     total_bytes,
     transferred_bytes: 0,
     progress_percent: 0,

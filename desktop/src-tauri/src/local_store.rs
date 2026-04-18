@@ -1,4 +1,4 @@
-use crate::data_transfer::models::DataTransferFavoriteNode;
+use crate::data_transfer::models::{DataTransferFavoriteNode, DataTransferTask};
 use crate::models::{
     AssignProfilesToDataSourceGroupResult, CompareHistoryInput, CompareHistoryItem,
     CompareHistoryPerformance, CompareHistorySummary, CompareHistoryType, ConnectionProfile,
@@ -42,6 +42,7 @@ pub struct DataTransferPublishedShareRecord {
     pub updated_at: String,
     pub files: Vec<DataTransferPublishedFileRecord>,
     pub allowed_fingerprints: Vec<String>,
+    pub password_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -269,6 +270,7 @@ impl LocalStore {
                 total_bytes,
                 files_json,
                 allowed_fingerprints_json,
+                password_hash,
                 created_at,
                 updated_at
             FROM data_transfer_published_shares
@@ -279,6 +281,7 @@ impl LocalStore {
         let rows = statement.query_map([], |row| {
             let files_json = row.get::<_, String>(5)?;
             let allowed_json = row.get::<_, String>(6)?;
+            let password_hash = row.get::<_, String>(7)?;
             let files = parse_json_value::<Vec<DataTransferPublishedFileRecord>>(&files_json);
             let allowed_fingerprints = parse_json_value::<Vec<String>>(&allowed_json);
             Ok(DataTransferPublishedShareRecord {
@@ -287,10 +290,11 @@ impl LocalStore {
                 scope: row.get(2)?,
                 file_count: row.get::<_, i64>(3)? as u64,
                 total_bytes: row.get::<_, i64>(4)? as u64,
-                created_at: row.get(7)?,
-                updated_at: row.get(8)?,
+                created_at: row.get(8)?,
+                updated_at: row.get(9)?,
                 files,
                 allowed_fingerprints,
+                password_hash,
             })
         })?;
 
@@ -313,9 +317,10 @@ impl LocalStore {
                 total_bytes,
                 files_json,
                 allowed_fingerprints_json,
+                password_hash,
                 created_at,
                 updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 title = excluded.title,
                 scope = excluded.scope,
@@ -323,6 +328,7 @@ impl LocalStore {
                 total_bytes = excluded.total_bytes,
                 files_json = excluded.files_json,
                 allowed_fingerprints_json = excluded.allowed_fingerprints_json,
+                password_hash = excluded.password_hash,
                 updated_at = excluded.updated_at
             ",
             params![
@@ -333,6 +339,7 @@ impl LocalStore {
                 payload.total_bytes as i64,
                 stringify_json_value(&payload.files),
                 stringify_json_value(&payload.allowed_fingerprints),
+                payload.password_hash,
                 payload.created_at,
                 payload.updated_at,
             ],
@@ -454,6 +461,77 @@ impl LocalStore {
               AND resource_id = ?
             ",
             params![transfer_kind, peer_fingerprint, resource_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn list_data_transfer_tasks(&self, limit: usize) -> Result<Vec<DataTransferTask>> {
+        let connection = self.open_connection()?;
+        let safe_limit = limit.max(1) as i64;
+        let mut statement = connection.prepare(
+            "
+            SELECT task_json
+            FROM data_transfer_tasks
+            ORDER BY updated_at DESC
+            LIMIT ?
+            ",
+        )?;
+
+        let rows = statement.query_map([safe_limit], |row| {
+            let task_json = row.get::<_, String>(0)?;
+            let task = serde_json::from_str::<DataTransferTask>(&task_json).unwrap_or_else(|_| {
+                DataTransferTask {
+                    id: String::new(),
+                    kind: String::new(),
+                    direction: String::new(),
+                    peer_alias: String::new(),
+                    peer_fingerprint: String::new(),
+                    status: "failed".to_string(),
+                    status_message: Some("历史任务解析失败".to_string()),
+                    total_bytes: 0,
+                    transferred_bytes: 0,
+                    progress_percent: 0.0,
+                    current_file_name: None,
+                    started_at: String::new(),
+                    updated_at: String::new(),
+                    completed_at: None,
+                    error_message: Some("历史任务解析失败".to_string()),
+                    files: Vec::new(),
+                }
+            });
+            Ok(task)
+        })?;
+
+        rows.collect::<rusqlite::Result<Vec<_>>>()
+            .context("读取数据传输任务失败")
+    }
+
+    pub fn upsert_data_transfer_task(&self, payload: &DataTransferTask) -> Result<()> {
+        let connection = self.open_connection()?;
+        connection.execute(
+            "
+            INSERT INTO data_transfer_tasks (
+                id,
+                task_json,
+                status,
+                started_at,
+                updated_at,
+                completed_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                task_json = excluded.task_json,
+                status = excluded.status,
+                updated_at = excluded.updated_at,
+                completed_at = excluded.completed_at
+            ",
+            params![
+                payload.id,
+                stringify_json_value(payload),
+                payload.status,
+                payload.started_at,
+                payload.updated_at,
+                payload.completed_at,
+            ],
         )?;
         Ok(())
     }
@@ -1593,6 +1671,7 @@ impl LocalStore {
                 total_bytes INTEGER NOT NULL,
                 files_json TEXT NOT NULL,
                 allowed_fingerprints_json TEXT NOT NULL,
+                password_hash TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -1610,12 +1689,31 @@ impl LocalStore {
                 PRIMARY KEY (transfer_kind, peer_fingerprint, resource_id)
             );
 
+            CREATE TABLE IF NOT EXISTS data_transfer_tasks (
+                id TEXT PRIMARY KEY,
+                task_json TEXT NOT NULL,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                completed_at TEXT
+            );
+
             CREATE INDEX IF NOT EXISTS idx_data_transfer_favorites_alias
                 ON data_transfer_favorites(alias);
             CREATE INDEX IF NOT EXISTS idx_data_transfer_partial_updated_at
                 ON data_transfer_partial_transfers(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_data_transfer_tasks_updated_at
+                ON data_transfer_tasks(updated_at DESC);
             ",
         )?;
+
+        let columns = load_table_columns(connection, "data_transfer_published_shares")?;
+        if !columns.contains("password_hash") {
+            connection.execute(
+                "ALTER TABLE data_transfer_published_shares ADD COLUMN password_hash TEXT NOT NULL DEFAULT ''",
+                [],
+            )?;
+        }
 
         Ok(())
     }

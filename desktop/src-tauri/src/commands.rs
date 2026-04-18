@@ -1,12 +1,14 @@
 use crate::app_state::AppState;
 use crate::compare_service::{CompareExecutionControl, CompareExecutionUpdate};
 use crate::data_transfer::models::{
-    DataTransferChooseFilesResult, DataTransferChooseFolderResult, DataTransferDirectSendPayload,
+    DataTransferAcceptIncomingTaskPayload, DataTransferChooseFilesResult,
+    DataTransferChooseFolderResult, DataTransferDirectSendPayload,
     DataTransferDownloadSharePayload, DataTransferFavoritePayload,
     DataTransferLoadRemoteSharesPayload, DataTransferPublishPayload,
-    DataTransferRegistrationPayload, DataTransferRemoveSharePayload,
-    DataTransferResolveSelectedFilesPayload, DataTransferSelectedFile, DataTransferSnapshot,
-    DataTransferTaskCancelResponse, DataTransferTaskStartResponse,
+    DataTransferRegistrationPayload, DataTransferRejectIncomingTaskPayload,
+    DataTransferRemoveSharePayload, DataTransferResolveSelectedFilesPayload,
+    DataTransferSelectedFile, DataTransferSnapshot, DataTransferTaskCancelResponse,
+    DataTransferTaskStartResponse,
 };
 use crate::models::{
     AppBootstrap, ApplyTableDataChangesPayload, AssignProfilesToDataSourceGroupPayload,
@@ -580,6 +582,30 @@ pub async fn data_transfer_start_direct_send(
     state
         .data_transfer_service
         .start_direct_send(payload)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_accept_incoming_task(
+    state: State<'_, AppState>,
+    payload: DataTransferAcceptIncomingTaskPayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .accept_incoming_task(&payload.task_id, payload.destination_dir)
+        .await
+        .map_err(to_error_message)
+}
+
+#[tauri::command]
+pub async fn data_transfer_reject_incoming_task(
+    state: State<'_, AppState>,
+    payload: DataTransferRejectIncomingTaskPayload,
+) -> Result<DataTransferSnapshot, String> {
+    state
+        .data_transfer_service
+        .reject_incoming_task(&payload.task_id)
         .await
         .map_err(to_error_message)
 }

@@ -3025,19 +3025,6 @@ export function DataTransferWorkspace() {
                 </button>
               ))}
             </nav>
-
-            <div className="data-transfer-sidebar-divider" />
-
-            <section className="data-transfer-sidebar-foot">
-              <button
-                className="data-transfer-nav-item"
-                type="button"
-                onClick={() => pushNotice('传输设置已整合到“文件传输”视图右侧卡片中', 'info')}
-              >
-                <span className="data-transfer-nav-icon">⚙</span>
-                <span>设置</span>
-              </button>
-            </section>
           </section>
         </aside>
 
